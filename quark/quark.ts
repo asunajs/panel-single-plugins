@@ -16,7 +16,6 @@ import {
   register_cron,
   start,
   success,
-  worker_hint,
 } from 'host-api';
 
 type Auth = { kps: string; sign: string; vcode: string };
@@ -31,9 +30,6 @@ const API_BASE = 'https://drive-m.quark.cn/1/clouddrive/capacity/growth';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
-
-// 两次 HTTP + 网络抖动：默认 2s 预算不够。独占线程，别拖住同线程的插件。
-worker_hint('exclusive');
 
 function text(value: unknown): string {
   return value === null || value === undefined ? '' : String(value).trim();
@@ -204,5 +200,4 @@ function run(): void {
 
 register_cron('签到', '0 8 * * *', run, {
   summary: '夸克网盘每日签到',
-  budget_ms: 30_000,
 });
