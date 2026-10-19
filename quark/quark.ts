@@ -124,8 +124,13 @@ function request(auth: Auth, action: 'info' | 'sign'): any {
   // 不要把 error 或 endpoint 原样拼进日志：endpoint 的 query 里有 sign/vcode。
   const netError = text(res.error);
   if (netError) {
-    if (/\b401\b|\b403\b/.test(netError)) {
-      throw new Error('夸克登录已失效，请重新抓包并更新插件配置里的 url');
+    const statusInError = netError.match(/http status:\s*(\d+)/i);
+    if (statusInError) {
+      const httpStatus = Number(statusInError[1]);
+      if (httpStatus === 401 || httpStatus === 403) {
+        throw new Error('夸克登录已失效，请重新抓包并更新插件配置里的 url');
+      }
+      throw new Error(`夸克接口请求失败（HTTP ${httpStatus}）`);
     }
     throw new Error('请求夸克接口失败（网络错误或超时），请稍后重试');
   }
