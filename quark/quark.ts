@@ -20,7 +20,12 @@ import {
 } from 'host-api';
 
 type Auth = { kps: string; sign: string; vcode: string };
-type HttpResult = { status: number; headers: Record<string, string>; body: string };
+type HttpResult = {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: string;
+  error?: string;
+};
 
 const API_BASE = 'https://drive-m.quark.cn/1/clouddrive/capacity/growth';
 const USER_AGENT =
@@ -119,21 +124,32 @@ function request(auth: Auth, action: 'info' | 'sign'): any {
     throw new Error('请求夸克接口失败（网络错误或超时），请稍后重试');
   }
 
+  // QuickJS 的 http_fetch 在网络 / HTTP 状态失败时返回 { error }，不是抛异常。
+  // 不要把 error 或 endpoint 原样拼进日志：endpoint 的 query 里有 sign/vcode。
+  const netError = text(res.error);
+  if (netError) {
+    if (/\b401\b|\b403\b/.test(netError)) {
+      throw new Error('夸克登录已失效，请重新抓包并更新插件配置里的 url');
+    }
+    throw new Error('请求夸克接口失败（网络错误或超时），请稍后重试');
+  }
+
+  const status = Number(res.status) || 0;
   let data: any = null;
   try {
-    data = JSON.parse(res.body);
+    data = JSON.parse(res.body || '');
   } catch {
     data = null;
   }
 
-  if (res.status === 401 || (data && Number(data.code) === 401)) {
+  if (status === 401 || (data && Number(data.code) === 401)) {
     throw new Error('夸克登录已失效，请重新抓包并更新插件配置里的 url');
   }
   if (!data || typeof data !== 'object') {
-    throw new Error(`夸克接口返回了非 JSON 内容（HTTP ${res.status}）`);
+    throw new Error(`夸克接口返回了非 JSON 内容（HTTP ${status || '未知'}）`);
   }
-  if (res.status < 200 || res.status >= 300) {
-    const message = text(data.message) || `HTTP ${res.status}`;
+  if (status < 200 || status >= 300) {
+    const message = text(data.message) || `HTTP ${status}`;
     throw new Error(`夸克接口请求失败：${message}`);
   }
   return data;
@@ -151,7 +167,7 @@ function megabytes(value: any): string {
   return `${(n / 1048576).toFixed(2)} MB`;
 }
 
-async function run(): Promise<void> {
+function run(): void {
   start('夸克签到开始');
   const auth = readAuth();
 
