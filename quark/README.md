@@ -70,6 +70,8 @@ issue、日志或仓库里。
 
 ## 实现边界
 
+- QuickJS 的 `host-api.http_fetch` 是同步模型，所以 handler 写成普通函数，不用 `async`；
+  QuickJS 不会 await 任务返回的 Promise。
 - 只调用签到需要的两个接口：`capacity/growth/info` 和 `capacity/growth/sign`；
 - 不登录、不读写网盘文件、不上传任何数据；
 - 不把 `sign` / `vcode` 写进日志或错误文本；
