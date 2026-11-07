@@ -10,8 +10,8 @@
  *                    登录要发二进制信封 → 明确报错，不静默发坏包
  *                    （实测文本层会把 489 B 的包改成 703 B，服务端 500）。
  *
- * ⚠ 上面的引擎差异是**临时兼容**，根因在面板宿主（http_fetch 只收文本、QuickJS 无 zlib）。
- *   面板侧补齐清单见 PANEL-TODOS.md —— 补齐后本文件的 IS_NODE 分支可以整体删除。
+ * ⚠ 上面的引擎差异是**临时兼容**，根因在面板宿主（fetch 兼容层不收二进制、QuickJS 无 zlib）。
+ *   面板侧补齐需求与提示词在仓根 panel-requests/ —— 补齐后本文件的 IS_NODE 分支可以整体删除。
  *
  * 协议证据链（逐字节对拍 + 真机验证）：
  *   mcloud-capture/cctv-video/re/14-jacc-envelope-and-sms-login.md
