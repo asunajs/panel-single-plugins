@@ -22,6 +22,11 @@ quark/
 - 一个目录只放一个插件入口；需要拆模块的插件不放这里。
 - 每个目录的 README 说明配置项、抓包方式和已知限制。
 
+> ⚠ "必须单文件"是**商城 `type: file` 当前的形态**，不是永远的天条：
+> 协议类插件内联后体积大（yangshipin 32 KB），可审阅性会反转。
+> 已向面板提了 `type: dir` 多文件工程的反向需求
+> （见 [`yangshipin/PANEL-TODOS.md`](yangshipin/PANEL-TODOS.md) §6）；面板支持后本仓会收多文件插件。
+
 ## 作为商城目录
 
 仓库根目录的 [`catalog.json`](catalog.json) 可以直接作为面板的 `PANEL_MARKET_URL`：

@@ -93,6 +93,54 @@ gzip 不可用 ⇒ 内层都组不出来。现在的 workaround 是把 `node:zli
 
 ---
 
+## 6. 商城支持多文件 `.ts` 工程（type: dir / zip 源码）
+
+**现状**（`docs/market.md` §TypeScript）：
+
+> `.ts` 单文件在安装时转成 `.js`，运行时不会加载 TypeScript，也不会为它引入
+> `tsx`/`tsconfig`/npm 依赖解析。插件只能 import `host-api` 或**自己携带的代码**。
+
+"自己携带的代码"目前只有一条路：**全部内联进一个文件**（本插件 32 KB 就是这么来的）。
+协议类插件一内联就会出现：JCE 编解码 + 信封 + 4 份骨架 base64 + 业务 + H5 全挤在一起，
+可审阅性明显下降 —— 单文件本来就以"容易审阅"为卖点，超过一定体积后这个卖点反转。
+
+Release zip 路径倒是支持多文件，但要求打 Release（版本节奏重）；日常迭代想直接从分支装。
+
+**提议**：`type: "file"` 之外加 `type: "dir"`：
+
+```json
+{
+  "id": "yangshipin",
+  "repo": "asunajs/panel-single-plugins",
+  "type": "dir",
+  "path": "yangshipin-ts/",        // 目录：入口 + 相对 import 的模块
+  "entry": "plugin.ts",
+  "ref": "main",
+  "provides": ["yangshipin"]
+}
+```
+
+安装时：
+
+1. 用 GitHub contents API 递归拉目录内文件（或 git trees API 一次拿）；
+2. 相对 import 拓扑排序后**合并/打包成一个 .js**（面板已有 OXC，缺的只是 bundling 一步；
+   或约定"只允许一层相对 import，按序拼接"的最简实现）；
+3. 后续转译/校验/落盘流程与单文件完全一致，产物仍是 `plugins/js/<id>.js`。
+
+**边界**（建议照搬单文件的哲学）：
+
+- 不解析 tsconfig paths / npm 依赖（仍然只有 host-api + 自带代码）；
+- 目录大小上限沿用 32 MiB；
+- `sha256` 记录为"目录内文件按路径排序后逐个拼接的 SHA"（安装标记里写明算法）。
+
+**验收**：把本插件拆回 `jce.ts / envelope.ts / skeletons.ts / plugin.ts` 四个文件，
+`type: dir` 安装后行为与单文件版一致，安装标记记录 4 个源文件。
+
+**插件侧可以删的代码**：无（这是商城体验项，不影响运行时）；
+但拆分后 `single-file-plugin.ts` 模板可以退役成"打包含示例"。
+
+---
+
 ## 优先级建议
 
 | # | 项 | 代价 | 收益 |
@@ -102,6 +150,7 @@ gzip 不可用 ⇒ 内层都组不出来。现在的 workaround 是把 `node:zli
 | 3 | mkdirSync | 极小 | 代码洁癖 |
 | 4 | 敏感输入 | 中（前端） | 一次性凭据不落配置文件 |
 | 5 | summary 显示 | 确认即可 | — |
+| 6 | 商城多文件 dir | 中（拉目录 + 打包一步） | 协议类插件可拆模块，恢复可审阅性 |
 
 ---
 
