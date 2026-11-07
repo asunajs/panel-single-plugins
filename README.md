@@ -25,7 +25,12 @@ quark/
 > ⚠ "必须单文件"是**商城 `type: file` 当前的形态**，不是永远的天条：
 > 协议类插件内联后体积大（yangshipin 32 KB），可审阅性会反转。
 > 已向面板提了 `type: dir` 多文件工程的反向需求
-> （见 [`yangshipin/PANEL-TODOS.md`](yangshipin/PANEL-TODOS.md) §6）；面板支持后本仓会收多文件插件。
+> （见 [`panel-requests/PANEL-TODOS.md`](panel-requests/PANEL-TODOS.md) §6）；面板支持后本仓会收多文件插件。
+
+## panel-requests/ —— 给面板仓的反向需求
+
+宿主能力补齐清单与工作会话提示词放这里（[`panel-requests/`](panel-requests/)），
+不放在插件目录：插件面向用户，宿主诉求面向面板维护者，两类读者分开。
 
 ## 作为商城目录
 
