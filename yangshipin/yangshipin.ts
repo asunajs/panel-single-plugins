@@ -1,17 +1,13 @@
+/* @panel { "min": "0.3.0" } */
 /**
  * 央视频（yangshipin）短信登录 + 积分任务 —— 单文件面板插件。
  *
  * 安装时由面板把 .ts 转成 .js（OXC / bun / node 均可），运行期只加载 JavaScript。
- * 一份文件跑三个引擎，能力差异在运行时探测：
+ * **一份文件、三个引擎、二进制路径零分支**：面板 0.3.0 起 QuickJS 的 fetch 也吃
+ * Uint8Array、也有 node:zlib，所以发码/登录/结算的代码与 Node 分支逐字相同。
  *
- *   Node / Bun 引擎：全功能。二进制信封走原生 fetch（吃 Uint8Array），
- *                    gzip 用 node:zlib —— 不需要宿主注入任何全局。
- *   QuickJS 引擎：  只能跑 H5 文本接口（whoami / 任务列表 / 领取 / cookie 导出）。
- *                    登录要发二进制信封 → 明确报错，不静默发坏包
- *                    （实测文本层会把 489 B 的包改成 703 B，服务端 500）。
- *
- * ⚠ 上面的引擎差异是**临时兼容**，根因在面板宿主（fetch 兼容层不收二进制、QuickJS 无 zlib）。
- *   面板侧补齐需求与提示词在仓根 panel-requests/ —— 补齐后本文件的 IS_NODE 分支可以整体删除。
+ * 文件头的 @panel 是最低面板版本声明：老面板会在**加载时**拒载并给出升级链接，
+ * 而不是等第一次发码才炸（0.2.x 的 QuickJS 既没有 zlib，也发不出字节）。
  *
  * 协议证据链（逐字节对拍 + 真机验证）：
  *   mcloud-capture/cctv-video/re/14-jacc-envelope-and-sms-login.md
@@ -23,12 +19,14 @@
 
 import {
   config,
-  http_fetch,
   log,
   register_handler,
   start,
   success,
 } from 'host-api';
+// 三个引擎都有 node:zlib（面板 0.3.0 起 QuickJS 也内置），所以是静态 import。
+import fs from 'node:fs';
+import { gunzipSync, gzipSync } from 'node:zlib';
 
 // ======================================================================
 // 引擎探测与小工具
@@ -46,30 +44,21 @@ function errText(e: unknown): string {
   return text(e && typeof e === 'object' && 'message' in (e as any) ? (e as any).message : e);
 }
 
-const g: any = globalThis;
-const IS_NODE = Boolean(g.process?.versions?.node || g.process?.versions?.bun);
+// 引擎探测已经不需要了：二进制 fetch / node:zlib / node:fs 三个引擎都有等价实现。
+// （唯一的历史差异是 QuickJS 的 fs 是面板注入的围栏版本 —— 现在也走 node:fs。）
 
 // ======================================================================
-// gzip（Node/Bun：node:zlib；QuickJS：本插件的二进制路径不可用，这里只为报错）
+// gzip —— 与 Node 同一条路径（面板 0.3.0 起 QuickJS 也有 node:zlib）
 // ======================================================================
 
 function gzipMember(data: Uint8Array): Uint8Array {
-  if (IS_NODE) {
-    // 动态 require 避免被非 Node 引擎加载时炸掉
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const zlib = (g.process as any).getBuiltinModule?.('node:zlib') ?? require('node:zlib');
-    const out = zlib.gzipSync(Buffer.from(data), { mtime: 0 });
-    return new Uint8Array(out);
-  }
-  throw new Error('当前引擎（QuickJS）没有 zlib，无法发二进制信封；请在面板把本插件切到 Node/Bun 引擎');
+  // mtime 恒为 0：gzip 头里那两个时间字节参与抓包对拍，不能带当前时间。
+  // Node 的 gzipSync 没有 mtime 选项（它本来就是 0），面板侧也一样 —— 两边同义。
+  return new Uint8Array(gzipSync(data, { mtime: 0 } as any));
 }
 
 function gunzipMember(data: Uint8Array): Uint8Array {
-  if (IS_NODE) {
-    const zlib = (g.process as any).getBuiltinModule?.('node:zlib') ?? require('node:zlib');
-    return new Uint8Array(zlib.gunzipSync(Buffer.from(data)));
-  }
-  throw new Error('当前引擎（QuickJS）没有 zlib');
+  return new Uint8Array(gunzipSync(data));
 }
 
 // ======================================================================
@@ -109,6 +98,13 @@ function writeStructBegin(out: number[], tag: number): void {
 }
 
 const STRUCT_END = 0x0b;
+
+// ⚠ 这个函数在 0.1.0 的单文件版里**丢了**（只有调用没有定义）—— 于是发码/登录/
+// 结算这条二进制路径在任何引擎上都是 ReferenceError，只有 H5 那几个能跑。
+// 对拍测试（scripts/… 或面板里的 mock）第一次真正跑到它。
+function writeStructEnd(out: number[]): void {
+  out.push(STRUCT_END);
+}
 
 /** 窄读取：按 tag 找最近的 str / int（不解析扩展类型，跳过即可）。 */
 function readStrByTag(buf: Uint8Array, wantTag: number): string | null {
@@ -195,7 +191,8 @@ export const DEFAULT_DEVICE: DeviceProfile = {
 };
 
 function newRequestUuid(): string {
-  const c = g.crypto;
+  // 全局 crypto 三个引擎都有（面板 0.3.0 起 QuickJS 也是 WebCrypto 形状）
+  const c = globalThis.crypto;
   if (c?.randomUUID) return c.randomUUID().toUpperCase();
   const b = new Uint8Array(16); c.getRandomValues(b);
   b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
@@ -317,10 +314,10 @@ function unwrapResponse(outer: Uint8Array): Uint8Array {
 }
 
 // ======================================================================
-// 传输：Node/Bun 用原生 fetch（吃 Uint8Array）；QuickJS 明确报错
+// 传输：三个引擎都是 fetch + Uint8Array（面板 0.3.0 起 QuickJS 也吃字节）
 // ======================================================================
 
-const nativeFetchHttp: HttpClient = async (url, req) => {
+const binaryHttp: HttpClient = async (url, req) => {
   try {
     const res = await fetch(url, { method: req.method, headers: req.headers, body: req.body });
     return {
@@ -332,13 +329,6 @@ const nativeFetchHttp: HttpClient = async (url, req) => {
     return { status: 0, error: errText(e) };
   }
 };
-
-const quickJsUnsupported: HttpClient = () => ({
-  status: 0,
-  error: 'QuickJS 引擎的 http_fetch 只能收发文本，本插件要发二进制信封；请在面板把本插件切到 Node/Bun 引擎',
-});
-
-const binaryHttp: HttpClient = IS_NODE ? nativeFetchHttp : quickJsUnsupported;
 
 // ======================================================================
 // 脱敏骨架（base64，gzip 前的内层）。来源：reference/packets/*.bin（已脱敏）
@@ -679,32 +669,17 @@ type Tokens = {
 type H5Http = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) =>
   Promise<{ status: number; json: any; text: string }>;
 
-/** 文本 HTTP：QuickJS 用宿主 http_fetch；Node 用原生 fetch。 */
+/** 文本 HTTP：三个引擎都是 fetch（面板 0.3.0 起 QuickJS 也有）。 */
 const h5Http: H5Http = async (url, init) => {
-  if (IS_NODE) {
-    try {
-      const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body });
-      const t = await res.text();
-      let json: any = null;
-      try { json = JSON.parse(t); } catch { json = null; }
-      return { status: res.status, json, text: t };
-    } catch (e) {
-      return { status: 0, json: null, text: String(errText(e)) };
-    }
-  }
-  // QuickJS：宿主 http_fetch 是同步的，这里包一层
-  let raw: any;
   try {
-    raw = http_fetch(url, { ...init, timeout_ms: 10000 });
+    const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body });
+    const t = await res.text();
+    let json: any = null;
+    try { json = JSON.parse(t); } catch { json = null; }
+    return { status: res.status, json, text: t };
   } catch (e) {
     return { status: 0, json: null, text: String(errText(e)) };
   }
-  const t = text(raw?.body);
-  let json: any = null;
-  try { json = JSON.parse(t); } catch { json = null; }
-  const st = Number(raw?.status) || 0;
-  if (raw?.error && !st) return { status: 0, json: null, text: String(raw.error) };
-  return { status: st, json, text: t };
 };
 
 function h5Qs(s: Tokens, extra: Record<string, string> = {}): string {
@@ -798,9 +773,10 @@ function readConfig(): YspConfig {
   return { phone, device };
 }
 
-function fsMod(): any {
-  if (IS_NODE) return (g.process as any).getBuiltinModule?.('node:fs') ?? require('node:fs');
-  return g.fs; // QuickJS 面板扩展：相对路径围栏在插件数据目录
+// 状态文件落插件数据目录。node:fs 三个引擎都有（QuickJS 那份被围栏在插件自己
+// 的目录内，相对路径 'data/state.json' 就是 <PLUGIN_DATA_DIR>/yangshipin/data/state.json）。
+function fsMod(): typeof import('node:fs') {
+  return fs;
 }
 
 function readState(): { tokens?: Tokens; phone?: string; loggedAt?: string } {
@@ -946,4 +922,4 @@ register_handler('do-tasks', hDoTasks, { summary: '一键结算全部任务并�
 register_handler('like', hLike, { summary: '点赞一次（写操作，幂等）' });
 register_handler('export-cookies', hExportCookies, { summary: '导出 H5 cookie（QuickJS 可跑）' });
 
-log('info', 'yangshipin 插件已加载（引擎：' + (IS_NODE ? 'Node/Bun，全功能' : 'QuickJS，仅 H5 文本接口') + '）');
+log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
