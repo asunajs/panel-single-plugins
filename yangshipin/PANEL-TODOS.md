@@ -53,14 +53,14 @@ gzip 不可用 ⇒ 内层都组不出来。现在的 workaround 是把 `node:zli
 
 ---
 
-## 3. QuickJS 的 `fs.mkdirSync`（小）
+## 3. ~~QuickJS 的 `fs.mkdirSync`~~（已核实：不缺，作废）
 
-**现状**：QuickJS 的 `fs` 兼容层没有 `mkdirSync`（或行为不同）。插件现在
-`try { fs.mkdirSync('data', { recursive: true }); } catch {}` 静默吞掉。
+**2026-11-07 复核**：`docs/node-compat.md` §node:fs 导出清单里 `mkdirSync` 是 🟡
+（`mkdirSync(path, {recursive}?)`，语义与 Node 一致）。插件里的 try/catch 只是防御性写法，
+不是兼容需要。**本条作废**，留作"写待办前先查 node-compat.md 矩阵"的记录。
 
-**提议**：QuickJS `fs.mkdirSync(path, {recursive})` 语义对齐 Node（已存在不报错）。
-
-**验收**：QuickJS 里连续两次 `mkdirSync('data', {recursive: true})` 都不抛。
+QuickJS `fs` 真正的注意事项只有两条：`writeFileSync` 忽略 options（不转码）、
+`readFileSync` 只认 utf8 编码 —— 对本插件都无影响（写的 JSON、读的 JSON）。
 
 ---
 
@@ -147,12 +147,33 @@ Release zip 路径倒是支持多文件，但要求打 Release（版本节奏重
 | --- | --- | --- | --- |
 | 1 | base64 请求体 | 极小（schema + 一处 decode） | **QuickJS 引擎跑通二进制插件**，收益最大 |
 | 2 | QuickJS gzip | 小（flate2 一次封装） | 配合 #1 彻底去掉"必须切 Node 引擎"的说明 |
-| 3 | mkdirSync | 极小 | 代码洁癖 |
+| 3 | ~~mkdirSync~~ | — | 作废（node-compat.md 已有 🟡） |
 | 4 | 敏感输入 | 中（前端） | 一次性凭据不落配置文件 |
 | 5 | summary 显示 | 确认即可 | — |
 | 6 | 商城多文件 dir | 中（拉目录 + 打包一步） | 协议类插件可拆模块，恢复可审阅性 |
 
----
+## QuickJS 全能力的路径（#1 + #2 落地后）
+
+逐项核对 `node-compat.md` 矩阵后的结论：**QuickJS 跑全功能只差 2 个缺口**。
+
+| 能力 | QuickJS 现状 |
+| --- | --- |
+| `TextEncoder/Decoder`、`URL/URLSearchParams`、`atob`、`crypto.randomUUID` | ✅ 兼容层已有 |
+| `Buffer.from(b64, 'base64')` | ✅ `node:buffer` 兼容层已有 |
+| 文本 HTTP | ✅ `http_fetch` |
+| `node:fs`（readFileSync / writeFileSync / mkdirSync） | ✅ 兼容层已有（🟡 但够用） |
+| `node:zlib`（gzip/gunzip） | ❌ **缺口 1** → 待办 #2 |
+| 二进制请求体 | ❌ **缺口 2** → 待办 #1 |
+| `process` / `getBuiltinModule` | ❌（明确不做）→ 插件引擎探测须改（见下） |
+
+#1 + #2 落地后的插件形态：
+
+- 登录全流程（发码 → NewLogin → 24802 → TaskComplete ×7）全走宿主 `fetch`
+  （`body_base64` 进 / `body_base64` 出），**一个 IS_NODE 分支都不剩**；
+- 额外收益：QuickJS 路径全部过宿主数据面（SSRF 判定 / 超时钳位 / 1 MiB 上限 / 日志脱敏），
+  比 Node 原生 fetch **更可控**；
+- 插件引擎探测改法：不探测 `process`（QuickJS 明确没有），改为探测宿主能力本身
+  —— `typeof gzip === 'function' && typeof http_fetch === 'function'` 即视为宿主通路可用。
 
 ## 附：当前插件对宿主的全部假设
 
@@ -163,6 +184,9 @@ Release zip 路径倒是支持多文件，但要求打 Release（版本节奏重
 | Node 引擎 `fetch` 吃 `Uint8Array` | `nativeFetchHttp` | 已有兜底报错 |
 | Node 引擎 `process.getBuiltinModule('node:zlib')` | `gzipMember` | 回退 `require`，再不行抛错 |
 | QuickJS `http_fetch` 同步、返回 `{status, body}` | `h5Http` 的 QuickJS 分支 | 报错信息已写明 |
+| QuickJS `node:fs` 有 readFileSync/writeFileSync/mkdirSync（🟡） | `readState` / `writeState` | `docs/node-compat.md` §node:fs 已核 |
 | QuickJS `fs` 相对路径围栏在数据目录 | `readState` / `writeState` | `docs/plugin-fs.md` §22.1 承诺 |
 | `config()` 按 mtime 缓存、保存后无需重载 | `readConfig` | `docs/host-api.md` §1.2.10 承诺 |
 | `register_handler` 第三参 `{summary}` 可选 | 8 个 handler | 若面板忽略也不报错 |
+| 引擎探测用 `process.versions` | `IS_NODE` | **QuickJS 明确无 `process`** ⇒ 探测必然两分支；
+  面板若加"能力探测"宿主函数（见 §QuickJS 全能力的路径），此处应改写 |
