@@ -13,6 +13,7 @@ quark/
 | 插件 | 文件 | 说明 |
 |---|---|---|
 | `quark` | [`quark/quark.ts`](quark/quark.ts) | 夸克网盘每日签到（单账号） |
+| `yangshipin` | [`yangshipin/yangshipin.ts`](yangshipin/yangshipin.ts) | 央视频短信登录 + 一键积分任务（引擎差异见其 README） |
 
 ## 为什么单文件
 
