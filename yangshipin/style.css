@@ -1,0 +1,334 @@
+/* 央视频插件页：账号 / 运行。
+   颜色、按钮、输入框全部走面板 token（--bg-deep / --accent / --surface / --sp-* / --r-*）
+   和 components.css 的组件类（.btn / .badge / .dialog / .card）；这里只补布局。 */
+
+:root {
+  /* 面板主题 token 的别名。不要在插件里重定义 --bg / --accent。 */
+  --dim: var(--text-dim, #bac2de);
+  --soft: var(--surface-2, #45475a);
+  --danger: var(--error, #f87171);
+}
+
+.page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: var(--sp-5, 24px);
+}
+
+.top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4, 16px);
+  margin-bottom: var(--sp-4, 16px);
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  flex: 0 0 auto;
+}
+
+.title {
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: 600;
+  margin: 0 0 var(--sp-1, 4px);
+}
+
+.card {
+  margin-bottom: var(--sp-4, 16px);
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3, 12px);
+  margin-bottom: var(--sp-2, 8px);
+}
+
+.card-head .card-title {
+  margin-bottom: var(--sp-1, 4px);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-2, 8px);
+  margin: var(--sp-3, 12px) 0;
+}
+
+.row.end {
+  justify-content: flex-end;
+}
+
+.row > .input {
+  flex: 1 1 220px;
+}
+
+.row .btn {
+  flex: 0 0 auto;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field-label {
+  color: var(--dim, var(--text-mute, #a6adc8));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.field-help {
+  color: var(--dim, var(--text-mute, #a6adc8));
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.input {
+  flex: 0 0 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-deep, #11111b);
+  border: 1px solid var(--border-control, var(--border-soft, #313244));
+  border-radius: var(--r-md, 8px);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent, #89b4fa);
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2, 8px);
+  padding: var(--sp-2, 8px) 0;
+  cursor: pointer;
+}
+
+.check-row input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.check-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.check-row b {
+  font-weight: 600;
+}
+
+.check-row small {
+  color: var(--dim, var(--text-mute, #a6adc8));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 账号列表 */
+
+.account-list {
+  display: grid;
+  gap: var(--sp-2, 8px);
+  padding: 0;
+  margin: var(--sp-3, 12px) 0 0;
+  list-style: none;
+}
+
+.account-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3, 12px);
+  padding: var(--sp-3, 12px);
+  border: 1px solid var(--border-soft, #313244);
+  border-radius: var(--r-md, 8px);
+  background: var(--surface, rgba(255, 255, 255, 0.025));
+}
+
+.account-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.account-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px);
+  margin-bottom: 5px;
+}
+
+.account-title strong {
+  font-size: 15px;
+}
+
+.account-meta {
+  color: var(--text, inherit);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.account-sub {
+  color: var(--dim, var(--text-mute, #a6adc8));
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 2px;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-1, 4px);
+  flex: 0 0 auto;
+}
+
+.badge.soft {
+  background: var(--soft, rgba(255, 255, 255, 0.06));
+  color: var(--dim, var(--text-mute, #a6adc8));
+  font-weight: 500;
+}
+
+.empty-hint {
+  padding: var(--sp-4, 16px);
+  border: 1px dashed var(--border-soft, #313244);
+  border-radius: var(--r-md, 8px);
+  color: var(--dim, var(--text-mute, #a6adc8));
+  text-align: center;
+}
+
+.btn-sm {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.danger-text {
+  color: var(--danger, var(--error, #f87171));
+}
+
+/* 输出 */
+
+.out {
+  margin: var(--sp-3, 12px) 0 0;
+  padding: var(--sp-3, 12px);
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: var(--bg-deep, #11111b);
+  border: 1px solid var(--border-soft, #313244);
+  border-radius: var(--r-md, 8px);
+}
+
+.footer-note {
+  margin-top: var(--sp-4, 16px);
+}
+
+/* 弹窗：沿用面板 components.css 的 .dialog*，这里只兜底层级和宽度 */
+
+.dialog-back {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4, 16px);
+  background: var(--scrim, rgba(0, 0, 0, 0.55));
+}
+
+.dialog-back[hidden] {
+  display: none !important;
+}
+
+.dialog {
+  width: min(460px, 100%);
+  max-height: min(86vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface, var(--bg, #1e1e2e));
+  border: 1px solid var(--border-soft, #313244);
+  border-radius: var(--r-lg, 12px);
+  box-shadow: var(--shadow, 0 20px 60px rgba(0, 0, 0, 0.35));
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2, 8px);
+  padding: var(--sp-3, 12px) var(--sp-4, 16px);
+  border-bottom: 1px solid var(--border-soft, #313244);
+  font-weight: 600;
+}
+
+.dialog-body {
+  padding: var(--sp-4, 16px);
+  overflow: auto;
+}
+
+.dialog-lead {
+  margin-bottom: var(--sp-3, 12px);
+}
+
+.err-text {
+  color: var(--danger, var(--error, #f87171));
+}
+
+/* 手机窄屏 */
+
+@media (max-width: 640px) {
+  .page {
+    padding: var(--sp-3, 12px);
+  }
+
+  .account-item {
+    flex-direction: column;
+  }
+
+  .account-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .top {
+    align-items: center;
+  }
+}
+
+/* 原生控件的强调色也跟随面板主题（复选框在浅色主题下默认是系统蓝）。 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent, #89b4fa);
+}
+
+/* 让原生控件（数字输入框的步进器、滚动条等）也跟主题的明暗走。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}

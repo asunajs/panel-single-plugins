@@ -50,6 +50,31 @@ function errText(e: unknown): string {
   return text(e && typeof e === 'object' && 'message' in (e as any) ? (e as any).message : e);
 }
 
+/**
+ * 等待。⚠ `sleep` 是**面板给 QuickJS 注入的全局**，Node/Bun 没有（node-compat.md：sleep ✅/❌），
+ * 而 QuickJS 的 setTimeout 回调是同步执行的、等不了 IO。所以两边各走各的，插件里只认 wait()。
+ */
+function wait(ms: number): Promise<void> {
+  const hostSleep = (globalThis as any).sleep;
+  if (typeof hostSleep === 'function') return hostSleep(ms);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 任务之间的间隔。
+ * 服务端对「7 个任务在同一秒内全部结算」这种指纹是敏感的 —— 真人不会这么干。
+ * 固定间隔同样是指纹（间隔恒定 = 脚本），所以取 [base, base+600ms) 的随机。
+ * base 可在配置里用 task_gap_ms 覆盖。
+ */
+function taskGapMs(): number {
+  let base = 900;
+  try {
+    const v = Number((config() as any)?.task_gap_ms);
+    if (Number.isFinite(v) && v >= 0) base = Math.min(v, 10000);
+  } catch { /* 读配置失败用默认值 */ }
+  return base + Math.floor(Math.random() * 600);
+}
+
 // 引擎探测已经不需要了：二进制 fetch / node:zlib / node:fs 三个引擎都有等价实现。
 // （唯一的历史差异是 QuickJS 的 fs 是面板注入的围栏版本 —— 现在也走 node:fs。）
 
@@ -617,6 +642,13 @@ async function whoamiJce(cfg: YspConfig, t: Tokens): Promise<{ ok: boolean; mess
  * 结算任务（TaskComplete 25042）。
  * ⚠ 尾字节 = 任务 id（re/14 §12.11）：不传 taskId 只会结算骨架自带的 42（点赞）。
  */
+/** 15006 = 未登录/会话过期（服务端唯一明确的会话失效信号）。 */
+function isSessionExpired(s: string): boolean {
+  return s.includes('15006');
+}
+
+const SESSION_HINT = '会话已过期 —— 到插件页重新「发验证码 → 登录」';
+
 async function completeTask(cfg: YspConfig, t: Tokens, taskId: number): Promise<{ ok: boolean; message: string }> {
   const inner = splice(SKEL_TASK, [
     [DEFAULT_DEVICE.clientKey, cfg.device.clientKey],
@@ -635,6 +667,7 @@ async function completeTask(cfg: YspConfig, t: Tokens, taskId: number): Promise<
   const txt = new TextDecoder('utf-8').decode(body);
   if (/success/i.test(txt)) return { ok: true, message: 'success' };
   if (/has been complete/i.test(txt)) return { ok: true, message: '已完成（此前结算）' };
+  if (isSessionExpired(txt)) return { ok: false, message: SESSION_HINT };
   return { ok: false, message: txt.replace(/[^\x20-\x7e\u4e00-\u9fa5]/g, '').slice(0, 40) };
 }
 
@@ -874,7 +907,9 @@ async function hDoTasks(): Promise<void> {
     [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
   ];
   let ok = 0; let skip = 0;
-  for (const [id, name] of TASK_IDS) {
+  for (let i = 0; i < TASK_IDS.length; i++) {
+    const [id, name] = TASK_IDS[i];
+    if (i > 0) await wait(taskGapMs()); // 任务之间随机间隔，别连成一串
     try {
       const r = await completeTask(cfg, t, id);
       if (r.ok && r.message === 'success') { ok++; log('info', `  [${name}] ✓ ${r.message}`); }
@@ -884,6 +919,7 @@ async function hDoTasks(): Promise<void> {
       log('warn', `  [${name}] ✗ ${errText(e)}`);
     }
   }
+  await wait(400);
   const c = await collectPoints(t);
   const total = await pointTotal(t);
   success(`任务结算 ${ok} 新完成 / ${skip} 已结算；${c.message}；当前积分 ${total ?? '?'}`);
@@ -912,12 +948,12 @@ async function hExportCookies(): Promise<void> {
   const netscape = ['# Netscape HTTP Cookie File']
     .concat(pairs.map(([k, v]) => `.yangshipin.cn\tTRUE\t/\tFALSE\t${exp}\t${k}\t${v}`))
     .join('\n');
-  log('info', 'Netscape cookies.txt：\n' + netscape);
-  log('info', 'JSON：\n' + JSON.stringify(
-    pairs.map(([name, value]) => ({ name, value, domain: '.yangshipin.cn', path: '/', secure: true, sameSite: 'None' })),
-    null, 2,
-  ));
-  success('cookie 已打印到日志（vplatform=5，iOS）');
+  // ⚠ 不写日志：cookie 里是 access_token / refresh_token / vusession，
+  // 日志会被面板落盘并可能在日志页/推送里被看到 —— 凭据只落 0600 的数据文件。
+  const path = 'data/cookies.txt';
+  try { fsMod().mkdirSync('data', { recursive: true }); } catch { /* 已存在 */ }
+  fsMod().writeFileSync(path, netscape + '\n');
+  success(`cookie 已写入 ${path}（含凭据，未写日志；不需要时记得删除）`);
 }
 
 register_handler('send-code', hSendCode, { summary: '发短信验证码（写操作）' });
@@ -953,18 +989,34 @@ function parseBody(req: any): any {
 function uiStatus() {
   const st = readState();
   const t = st.tokens;
-  if (!t?.jce_token) return { ok: true, loggedIn: false };
+  const engine = IS_NODE ? 'node' : 'quickjs';
+  if (!t?.jce_token) return { ok: true, engine, accounts: [] };
   return {
     ok: true,
-    loggedIn: true,
-    vuid: t.vuserid,
-    nickname: t.nickname,
-    loggedAt: st.loggedAt,
-    engine: IS_NODE ? 'node' : 'quickjs',
+    engine,
+    accounts: [{
+      vuid: t.vuserid,
+      phone: st.phone,
+      nickname: t.nickname,
+      loggedAt: st.loggedAt,
+      // 积分靠 H5 现查：失败就是 null，不影响账号卡片显示
+      points: null,
+    }],
   };
 }
 
-register_route(WEB_API + '/status', 'GET', () => routeJson(200, uiStatus()));
+register_route(WEB_API + '/status', 'GET', () => {
+  const base = uiStatus();
+  const t = readState().tokens;
+  if (!t?.jce_token) return routeJson(200, base);
+  // 补一次积分（quickjs 也跑同一条 H5 路径）；失败不报错，卡片先显示「积分未读取」
+  return pointTotal(t)
+    .then((p) => {
+      if (p !== null && base.accounts[0]) base.accounts[0].points = p;
+      return routeJson(200, base);
+    })
+    .catch(() => routeJson(200, base));
+});
 
 register_route(WEB_API + '/login/send', 'POST', (req: any) => {
   const body = parseBody(req);
@@ -1022,7 +1074,9 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
     if (body?.likeFirst) {
       try { await likeAction(cfg, t); lines.push('✓ 已点赞'); } catch (e) { lines.push('⚠ 点赞失败：' + errText(e)); }
     }
-    for (const [id, name] of TASKS) {
+    for (let i = 0; i < TASKS.length; i++) {
+      const [id, name] = TASKS[i];
+      if (i > 0) await wait(taskGapMs()); // 与 handler 同一套节流
       try {
         const r = await completeTask(cfg, t, id);
         if (r.ok && r.message === 'success') { ok++; lines.push(`✓ [${name}] ${r.message}`); }
@@ -1030,6 +1084,7 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
         else { lines.push(`✗ [${name}] ${r.message}`); }
       } catch (e) { lines.push(`✗ [${name}] ${errText(e)}`); }
     }
+    await wait(400); // 结算与领取之间也留一口气
     const c = await collectPoints(t);
     const total = await pointTotal(t);
     lines.push(`领取：${c.message}`);
