@@ -173,6 +173,19 @@ function renderAccounts() {
     }));
     actions.appendChild(run);
 
+    const signin = document.createElement('button');
+    signin.className = 'btn btn-sm';
+    signin.type = 'button';
+    signin.textContent = '签到';
+    signin.addEventListener('click', () => withBusy(signin, async () => {
+      show('正在做兑吧签到（连续 7 天一个周期，1-6 天各 5 分，第 7 天 20 分）…');
+      const data = await call('/signin', { method: 'POST', body: {} });
+      setLines([data.message || '已签到']);
+      setState('success', '已签到');
+      await loadAccounts(true);
+    }));
+    actions.appendChild(signin);
+
     const cookies = document.createElement('button');
     cookies.className = 'btn btn-sm';
     cookies.type = 'button';

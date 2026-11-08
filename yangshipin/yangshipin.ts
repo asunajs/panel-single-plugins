@@ -789,6 +789,199 @@ async function pointTotal(s: Tokens): Promise<number | null> {
   return typeof v === 'number' ? v : null;
 }
 
+// ======================================================================
+// 兑吧签到（真签到）—— 与任务表里的「每日签到(id=28)」是两套账：
+//   TaskComplete(28) 只把任务表写成 1/1，point=0，不发任何积分；
+//   真正给分的是兑吧这套，规则：连续 7 天一个周期，1-6 天各 5 分，
+//   第 3 天 1 次抽奖，第 7 天 20 分 + 抽奖，周期上限 50 分。
+//
+// 链路（全部纯 HTTP，不需要 App、不需要浏览器）：
+//   ① GET  /web/jump_duiba?redirect=<兑吧签到页>  → 带一次性免登票的 autologin URL
+//   ② GET  autologin（手动跟 302）                → 在 jifenmall.yangshipin.cn 立起兑吧会话
+//   ③ POST /chw/ctoken/getToken                   → 返回 ~18KB 混淆 JS
+//   ④ eval 那段 JS                                 → window['40d5f02t'] = 9 位一次性 token
+//   ⑤ POST /sign/component/doSign                 → body: signOperatingId=..&token=..
+//
+// ③ 必须带 referer/origin/accept/accept-language，否则服务端直接掐连接（不给响应体）。
+// ④ 的键名 `40d5f02t` 是 getDuibaToken 里写死的；那段 JS 还会往 window 上撒几十个
+//   同形状的干扰变量，只有这一个是真的。
+// ======================================================================
+
+const DU_VAPPID = '67988023';
+const DU_VSECRET = '881bb45da6c2827a186f5a6983a2cd2a3b256e370a205acf';
+const DU_SIGN_OP = '149734527595216';   // 央视频签到活动 id
+const DU_CTOKEN_KEY = '40d5f02t';       // eval 后取 token 的键名（服务端写死）
+const DU_BASE = 'https://jifenmall.yangshipin.cn';
+const DU_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36';
+
+type DuibaSignResult = {
+  ok: boolean;
+  already: boolean;
+  desc: string;
+  consecutiveCount: number | null;
+  totalCount: number | null;
+  targetCount: number | null;
+};
+
+/** 低层请求：需要读 set-cookie / location，所以不走 h5Http。 */
+async function duFetch(url: string, init: { method: string; headers: Record<string, string>; body?: string }) {
+  const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any });
+  const text = await res.text();
+  let setCookies: string[] = [];
+  const anyHeaders = res.headers as any;
+  if (typeof anyHeaders.getSetCookie === 'function') {
+    setCookies = anyHeaders.getSetCookie();
+  } else {
+    const one = res.headers.get('set-cookie');
+    if (one) setCookies = [one];
+  }
+  return { status: res.status, headers: res.headers, text, setCookies };
+}
+
+function mergeCookies(jar: Record<string, string>, setCookies: string[]) {
+  for (const sc of setCookies) {
+    const first = sc.split(';')[0] ?? '';
+    const eq = first.indexOf('=');
+    if (eq > 0) jar[first.slice(0, eq).trim()] = first.slice(eq + 1).trim();
+  }
+}
+
+function jarString(jar: Record<string, string>): string {
+  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+/** 查兑吧签到状态（只读）。 */
+async function duibaStatus(s: Tokens): Promise<DuibaSignResult> {
+  const r = await duibaOpen(s);
+  if (!r.session) return r.fail;
+  const idx = await duibaApi(r.session, '/sign/component/index', 'GET');
+  const d = idx.json?.data ?? {};
+  return {
+    ok: true,
+    already: d.signResult === true,
+    desc: idx.json ? 'ok' : '状态查询失败',
+    consecutiveCount: typeof d.consecutiveCount === 'number' ? d.consecutiveCount : null,
+    totalCount: typeof d.totalCount === 'number' ? d.totalCount : null,
+    targetCount: typeof d.targetCount === 'number' ? d.targetCount : null,
+  };
+}
+
+/** ① + ② 建会话。 */
+async function duibaOpen(s: Tokens): Promise<
+  | { session: { cookie: string; referer: string }; fail: null }
+  | { session: null; fail: DuibaSignResult }
+> {
+  const fail = (desc: string): { session: null; fail: DuibaSignResult } => ({
+    session: null,
+    fail: { ok: false, already: false, desc, consecutiveCount: null, totalCount: null, targetCount: null },
+  });
+  const redirect = `https://activity.m.duiba.com.cn/sign/component/page?signOperatingId=${DU_SIGN_OP}`;
+  const qs = new URLSearchParams({
+    vappid: DU_VAPPID, vsecret: DU_VSECRET, raw: '1', channel_id: '', redirect,
+  });
+  const jr = await h5Http(`${H5_BASE}/jump_duiba?${qs}`, {
+    method: 'GET', headers: { cookie: cookieHeader(s), 'user-agent': DU_UA },
+  });
+  const jumpUrl = jr.json?.data?.jumpUrl;
+  if (!jumpUrl) {
+    return fail(`换取兑吧免登地址失败：${jr.json?.msg ?? jr.json?.ret ?? jr.status}`);
+  }
+  const jar: Record<string, string> = {};
+  let url = jumpUrl;
+  let landing = '';
+  for (let i = 0; i < 5; i++) {
+    let r;
+    try {
+      r = await duFetch(url, { method: 'GET', headers: { 'user-agent': DU_UA } });
+    } catch (e) {
+      return fail(`兑吧自动登录失败：${errText(e)}`);
+    }
+    mergeCookies(jar, r.setCookies);
+    const loc = r.headers.get('location');
+    if (!loc || r.status < 300 || r.status >= 400) { landing = url; break; }
+    url = new URL(loc, url).toString();
+  }
+  if (!Object.keys(jar).length) return fail('兑吧自动登录没有拿到任何 cookie');
+  const referer = `${DU_BASE}/sign/component/page?signOperatingId=${DU_SIGN_OP}&from=login&spm=78211.1.1.1`;
+  return { session: { cookie: jarString(jar), referer }, fail: null };
+}
+
+/** ③ + ④ 取一次性 token。 */
+async function duibaToken(session: { cookie: string; referer: string }): Promise<string | null> {
+  const ct = await duibaApi(session, '/chw/ctoken/getToken', 'POST', `timestamp=${Date.now()}`, true);
+  const js = ct.json?.token;
+  if (typeof js !== 'string' || !js) return null;
+  const win: Record<string, any> = {};
+  try {
+    // 服务端下发的混淆 JS 只往 window 上挂值；给它一个假 window 就够。
+    new Function('window', 'document', 'navigator', 'location', js)(
+      win,
+      { cookie: '', referrer: session.referer },
+      { userAgent: DU_UA },
+      { href: session.referer, hostname: 'jifenmall.yangshipin.cn' },
+    );
+  } catch (e) {
+    log('兑吧 token JS 执行失败', errText(e));
+    return null;
+  }
+  const tok = win[DU_CTOKEN_KEY];
+  return typeof tok === 'string' && tok ? tok : null;
+}
+
+/** 调兑吧接口。raw=true 时按 ctoken 的要求补浏览器头。 */
+async function duibaApi(
+  session: { cookie: string; referer: string },
+  path: string,
+  method: string,
+  body?: string,
+  raw = false,
+): Promise<{ status: number; json: any; text: string }> {
+  const headers: Record<string, string> = {
+    cookie: session.cookie,
+    'user-agent': DU_UA,
+    referer: session.referer,
+    origin: DU_BASE,
+    accept: 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh-Hans;q=0.9',
+  };
+  if (body !== undefined) headers['content-type'] = 'application/x-www-form-urlencoded';
+  const r = await h5Http(`${DU_BASE}${path}${raw || method === 'POST' ? `?_=${Date.now()}` : ''}`, {
+    method, headers, body,
+  });
+  return { status: r.status, json: r.json, text: r.text };
+}
+
+/** 真正签到。已签到时 already=true（不是错误）。 */
+async function duibaSign(s: Tokens): Promise<DuibaSignResult> {
+  const opened = await duibaOpen(s);
+  if (!opened.session) return opened.fail;
+  const session = opened.session;
+  // 先看状态：已签到就别发写请求，幂等优先
+  const before = await duibaApi(session, '/sign/component/index', 'GET');
+  const bd = before.json?.data ?? {};
+  const base: DuibaSignResult = {
+    ok: true, already: bd.signResult === true, desc: '',
+    consecutiveCount: typeof bd.consecutiveCount === 'number' ? bd.consecutiveCount : null,
+    totalCount: typeof bd.totalCount === 'number' ? bd.totalCount : null,
+    targetCount: typeof bd.targetCount === 'number' ? bd.targetCount : null,
+  };
+  if (base.already) {
+    return { ...base, desc: `今日已签到（连续 ${base.consecutiveCount ?? '?'} 天）` };
+  }
+  const token = await duibaToken(session);
+  if (!token) return { ...base, ok: false, desc: '取签到 token 失败（ctoken）' };
+  const res = await duibaApi(session, '/sign/component/doSign', 'POST',
+    `signOperatingId=${DU_SIGN_OP}&token=${token}`);
+  const j = res.json ?? {};
+  if (j.success === true) {
+    const order = j.data?.orderNum ? `，订单 ${j.data.orderNum}` : '';
+    return { ...base, already: false, desc: `签到成功${order}` };
+  }
+  const desc = String(j.desc ?? j.msg ?? '');
+  if (desc.includes('已签到')) return { ...base, already: true, desc: '今日已签到' };
+  return { ...base, ok: false, desc: `签到失败：${desc || `HTTP ${res.status}`}（code=${j.code ?? '?'}）` };
+}
+
 type TaskRow = { id: number; name: string; point: number; status: number; completedCount?: number; maxCompleteCount?: number };
 
 async function listTasks(s: Tokens): Promise<{ ok: boolean; message: string; tasks: TaskRow[] }> {
@@ -949,7 +1142,7 @@ const TASK_BUDGET_MS = 480_000;
 
 type PlanItem = { id: number; name: string; need: number };
 type QueueItem = { id: number; name: string };
-type DoTasksResult = { ok: number; skip: number; failed: number; planned: number; collect: string; points: number | null; lines: string[] };
+type DoTasksResult = { ok: number; skip: number; failed: number; planned: number; collect: string; points: number | null; signin: string; lines: string[] };
 
 /**
  * 查**一次**现状，算出每个任务还差几次。
@@ -1075,13 +1268,27 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
     }
   }
 
-  // ④ 领取
+  // ④ 兑吧签到（真签到；任务表里的「每日签到」只写计数、不给分，两套账）
+  let signin = '';
+  try {
+    const sg = await duibaSign(t);
+    signin = sg.desc;
+    const mark = sg.ok ? (sg.already ? '·' : '✓') : '✗';
+    const progress = sg.targetCount !== null && sg.consecutiveCount !== null
+      ? `（连续 ${sg.consecutiveCount} 天 / 周期 ${sg.targetCount + 1} 天）` : '';
+    push(`${mark} 兑吧签到：${sg.desc}${progress}`);
+  } catch (e) {
+    signin = `失败：${errText(e)}`;
+    push(`✗ 兑吧签到：${errText(e)}`);
+  }
+
+  // ⑤ 领取
   await wait(400);
   const c = await collectPoints(t);
   const points = await pointTotal(t);
   push(`领取：${c.message}`);
 
-  return { ok, skip, failed, planned: queue.length, collect: c.message, points, lines };
+  return { ok, skip, failed, planned: queue.length, collect: c.message, points, signin, lines };
 }
 
 async function hDoTasks(): Promise<void> {
@@ -1089,8 +1296,24 @@ async function hDoTasks(): Promise<void> {
   // 手动触发只跑 1 轮：要快。想一次拿满就在插件页点「做任务」多次，或等定时任务（3 轮）
   const r = await doTasksCore({ onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
   const summary = `任务结算 ${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
-    + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
+    + `；签到：${r.signin || '未执行'}；${r.collect}；当前积分 ${r.points ?? '?'}`;
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
+  success(summary);
+}
+
+/**
+ * 只做兑吧签到（写操作，幂等）。
+ * 和 do-tasks 里的签到是同一条链路，独立出来方便单独补签 / 排查。
+ */
+async function hSignin(): Promise<void> {
+  start('央视频签到');
+  const t = needTokens();
+  const r = await duibaSign(t);
+  const progress = r.consecutiveCount !== null
+    ? `连续 ${r.consecutiveCount} 天` + (r.targetCount !== null ? `，周期还差 ${Math.max(0, r.targetCount + 1 - r.consecutiveCount)} 天` : '')
+    : '';
+  const summary = `签到：${r.desc}` + (progress ? `（${progress}）` : '');
+  if (!r.ok) throw new Error(summary);
   success(summary);
 }
 
@@ -1132,6 +1355,7 @@ register_handler('h5-check', hH5Check, { summary: 'H5 会话自检' });
 register_handler('tasks', hTasks, { summary: '任务列表与积分' });
 register_handler('do-tasks', hDoTasks, { summary: '一键结算全部任务并领取积分（写操作）' });
 register_handler('like', hLike, { summary: '点赞一次（写操作，幂等）' });
+register_handler('signin', hSignin, { summary: '兑吧真签到，连续7天周期（写操作，幂等）' });
 register_handler('export-cookies', hExportCookies, { summary: '导出 H5 cookie' });
 
 /* ============================================================

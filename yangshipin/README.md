@@ -60,6 +60,39 @@
 3. **只发还差次数的包** —— 已满的任务一个请求都不发；点赞/分享/签到只在第一轮出现；
 4. 发完领取积分。
 
+
+## 两个「签到」
+
+这个 App 里有**两套签到**，互不相干：
+
+| | 任务表里的「每日签到」 | 兑吧签到（真签到） |
+|---|---|---|
+| 入口 | 积分任务列表 `id=28` | 积分页 → 签到按钮 → H5 |
+| 实现 | `TaskComplete(28)` | `POST /sign/component/doSign` |
+| 给分 | **0 分**（`point: 0`） | 1-6 天各 5 分，第 3 天抽奖，第 7 天 20 分 + 抽奖 |
+| 上限 | 1/天 | 连续 7 天一个周期，周期内最高 50 分 |
+
+只刷前者会出现「任务表显示签到 1/1，但兑吧里一次没签」——两边是两套账。
+
+## 兑吧签到链路（纯 HTTP，不需要 App / 浏览器）
+
+```
+① GET  /web/jump_duiba?redirect=<兑吧签到页>   → 带一次性免登票的 autologin URL
+② GET  autologin（手动跟 302）                 → 在 jifenmall.yangshipin.cn 立起兑吧会话
+③ POST /chw/ctoken/getToken                    → 返回 ~18KB 混淆 JS
+④ eval 那段 JS                                  → window['40d5f02t'] = 9 位一次性 token
+⑤ POST /sign/component/doSign                  → body: signOperatingId=..&token=..
+```
+
+几个坑：
+
+- **③ 必须带 `referer` / `origin` / `accept` / `accept-language`**，否则服务端直接掐连接（不给响应体，表现为 `Remote end closed connection`）。
+- **④ 的键名 `40d5f02t` 是服务端写死的**。那段 JS 会往 `window` 上撒几十个同形状的干扰变量（`cw7mxls`、`aj26afec1`…），只有这一个是真的 token。
+- 那段 JS **能脱离浏览器执行**（不需要 DOM），插件里用 `new Function('window','document','navigator','location', js)` 传一个假 window 即可。
+- `token` 每次不同（`q2hkm6ddk`、`kdwjcgl`…），随机编一个会被判「非法token」——服务端真的校验。
+
+已签到时接口返回 `{"success":false,"code":null,"desc":"今日已签到"}`，这是正常状态不是错误；插件发写请求前会先查 `index`，已签就直接跳过（幂等）。
+
 **间隔按动作分级**，不是一刀切：
 
 | 动作 | 间隔 | 为什么 |
@@ -114,6 +147,7 @@
 | `tasks` | 任务列表 + 当前积分 |
 | `do-tasks` | 结算 7 个任务 + 自动领取 |
 | `like` | 点赞一次（幂等） |
+| `signin` | 兑吧真签到（写操作，幂等） |
 | `export-cookies` | 导出 H5 cookie（Netscape + JSON） |
 
 ## 能力与边界（诚实清单）
@@ -121,11 +155,14 @@
 **能做**（2026-11-07 真机验证）：
 
 - 短信登录 → 三枚 token（access_token / refresh_token / vusession，映射逐字节比对过）；
-- `TaskComplete`(25042) 尾字节 = 任务 id，7 个任务（含每日签到）全部脚本写满 maxCompleteCount；
+- `TaskComplete`(25042) 尾字节 = 任务 id，7 个任务全部脚本写满 maxCompleteCount；
+- **兑吧真签到**（连续 7 天周期）：`jump_duiba → autologin → ctoken → eval → doSign`，纯 HTTP 跑通，
+  不需要 App、不需要浏览器；
 - H5 领取积分、导出 cookie（vplatform=5，iOS）。
 
 **不能做**：
 
+- **任务表里的「每日签到」不给分**——`point: 0`，它只是把计数写满；真正的分要靠兑吧签到（已实现）；
 - **观看/分享/关注类任务不需要真实动作**——`TaskComplete` 直接写计数（今晚订正的结论）；
 - 不能无限刷分：到 `maxCompleteCount` 后幂等返回 `task has been complete`；
 - ~~QuickJS 引擎发不了二进制信封~~ —— 面板 0.3.0 已补齐（字节 `fetch` + `node:zlib`），
