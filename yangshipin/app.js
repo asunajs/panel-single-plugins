@@ -165,6 +165,7 @@ function renderAccounts() {
     run.type = 'button';
     run.textContent = '做任务';
     run.addEventListener('click', () => withBusy(run, async () => {
+      show('正在结算 7 个任务。\n每个任务之间间隔 35–65 秒（真人节奏，避免被判定为脚本），\n整轮约 5 分钟，请不要关闭页面…');
       const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true } });
       showLines((data.lines || []).concat([data.message || '']));
       setState('success', '已完成');
@@ -348,6 +349,7 @@ $('status').addEventListener('click', () => withBusy($('status'), async () => {
 }));
 
 $('run').addEventListener('click', () => withBusy($('run'), async () => {
+  show('正在结算 7 个任务。\n每个任务之间间隔 35–65 秒（真人节奏，避免被判定为脚本），\n整轮约 5 分钟，请不要关闭页面…');
   const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true } });
   showLines((data.lines || []).concat([data.message || '']));
   setState('success', '已完成');

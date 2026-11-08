@@ -27,6 +27,7 @@ import {
   register_route,
   start,
   success,
+  worker_hint,
 } from 'host-api';
 // 三个引擎都有 node:zlib（面板 0.3.0 起 QuickJS 也内置），所以是静态 import。
 import fs from 'node:fs';
@@ -62,18 +63,19 @@ function wait(ms: number): Promise<void> {
 }
 
 /**
- * 任务之间的间隔。
- * 服务端对「7 个任务在同一秒内全部结算」这种指纹是敏感的 —— 真人不会这么干。
- * 固定间隔同样是指纹（间隔恒定 = 脚本），所以取 [base, base+600ms) 的随机。
- * base 可在配置里用 task_gap_ms 覆盖。
+ * 任务之间的间隔：默认 35–65 秒随机，`config().task_gap_ms` 可覆盖（钳到 [30s, 300s]）。
+ * 见下方 taskGapMs 里的说明 —— 真人做一个任务就是几十秒起步。
  */
 function taskGapMs(): number {
-  let base = 900;
+  // 默认 35–65 秒。低于 30 秒基本等于明说「我是脚本」：真人做完一个任务
+  // （看视频 / 点赞 / 分享）至少几十秒，7 个包在十几秒内发完是最典型的机器指纹。
+  // 服务端也可能对「间隔恒定」单独打标，所以这里必须是随机区间而不是固定值。
+  let base = 35000;
   try {
     const v = Number((config() as any)?.task_gap_ms);
-    if (Number.isFinite(v) && v >= 0) base = Math.min(v, 10000);
+    if (Number.isFinite(v) && v > 0) base = Math.min(Math.max(v, 30000), 300000);
   } catch { /* 读配置失败用默认值 */ }
-  return base + Math.floor(Math.random() * 600);
+  return base + Math.floor(Math.random() * 30000);
 }
 
 // 引擎探测已经不需要了：二进制 fetch / node:zlib / node:fs 三个引擎都有等价实现。
@@ -919,6 +921,16 @@ type DoTasksResult = { ok: number; skip: number; failed: number; collect: string
 /**
  * 做任务的核心（handler / WebUI 路由 / 定时任务三处共用，别再各写一份）。
  * onLine 让调用方决定往哪输出：日志、HTTP 响应、还是干脆不要。
+ *
+ * ⚠ **一次调用只处理一个账号，也别指望它处理多个。**
+ * 一轮 7 个包 × 35–65 秒 ≈ 5 分钟，而面板 budget 上限是 10 分钟（host-api §1.2.5），
+ * 超了是 SIGKILL 整个进程组、插件内存状态全丢。所以：
+ *   1 账号 = 1 轮 ≈ 5 分钟  → 安全
+ *   3 账号塞进一次调用 ≈ 15 分钟 → 必被砍
+ * 多账号的正确形态是「一个账号一条 register_cron」（见文件末尾），
+ * 让面板按任务分别计时；本函数只认 readState() 里的那一个会话。
+ * 真要支持多账号，先把 readState/writeState 改成 accounts 数组，
+ * 再按账号循环注册任务 —— 别在这里加 for 循环。
  */
 async function doTasksCore(
   opts: { likeFirst?: boolean; onLine?: (s: string) => void; maxRounds?: number } = {},
@@ -1123,7 +1135,7 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
     lines: r.lines,
     points: r.points,
   }));
-});
+}, { budget_ms: 600000 });
 
 register_route(WEB_API + '/cookies', 'GET', () => {
   const t = needTokens();
@@ -1142,25 +1154,42 @@ register_route(WEB_API + '/cookies', 'GET', () => {
 register_nav({ label: '央视频', icon: '📺' });
 
 /* ============================================================
- * 定时任务：每天 17:00 前后随机 1 小时
+ * 定时任务：17 / 18 / 19 点各跑一次，各带 ±15 分钟抖动
  *
- * `~1h` 是面板 cron 的抖动后缀（host-api §1.2.8），实际触发落在
- * [16:00, 18:00) 之间随机 —— 固定时刻是脚本指纹，抖动让它每天都不同。
- * 只往后偏（17:00–18:00）就把 `~1h` 换成 `+1h`。
+ * 为什么是三次而不是一次：服务端的计数语义是「每次 TaskComplete 让
+ * completedCount +1，累计到 maxCompleteCount 为止」。观看类/关注的
+ * maxCompleteCount 是 3，所以一次执行最多让每个任务 +1 —— 一轮只值 35 分，
+ * 全天 70 分要三轮。想在一次执行里循环三轮 = 跑 15 分钟，撑爆面板
+ * budget（上限 10 分钟），而且连发三轮本身就是脚本特征。
+ * 正确做法是让**调度**去分摊：三次触发、每次一轮，间隔一小时。
+ *
+ * `~15m` 是面板 cron 的抖动后缀（host-api §1.2.8）：实际触发落在
+ * [t-15m, t+15m] 随机，固定时刻是脚本指纹。三次互不重叠（16:45–19:15）。
+ * 只想要下午 5 点一次、不要拿满，就改回 `0 17 * * * ~1h`。
  * ============================================================ */
-register_cron('每日任务', '0 17 * * * ~1h', async () => {
+// ⚠ 多账号：每个账号各注册一条 register_cron（任务名带账号后缀），
+// 绝不能在**一条**任务里循环账号 —— 3 个账号 × 5 分钟 = 15 分钟，超过 budget 上限直接被砍。
+// 当前实现是单账号（state.json 里一份会话），所以只有一条。
+//
+// 一次任务要跑 5 分钟（7 个包 × 35–65 秒），远超普通任务预期：
+// 声明独占线程，免得同线程的其它插件被我们一起拖住（host-api §1.2.5 明确要求）。
+worker_hint('exclusive');
+
+register_cron('每日任务', '0 17-19 * * * ~15m', async () => {
   start('央视频每日任务');
   const st = readState();
   if (!st.tokens?.jce_token) {
     log('warn', '没有登录态，跳过本次 —— 到插件页「添加账号」登录一次即可');
     return;
   }
-  const r = await doTasksCore({ maxRounds: 3, onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  // 一次触发只跑一轮：一轮 7 个包 × 35–65 秒 ≈ 5 分钟，装得下 board 的 10 分钟预算；
+  // 拿满靠 17/18/19 三次触发（见上面的表达式注释）。
+  const r = await doTasksCore({ maxRounds: 1, onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
   const summary = `每日任务：${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
   // 全军覆没才让面板记一次失败；部分失败（比如到上限）只记 warn
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
   log(r.failed ? 'warn' : 'info', summary);
-}, { summary: '每天 17:00 前后随机 1 小时，结算 7 个任务并领取积分' });
+}, { summary: '每天 17/18/19 点各一次（±15 分钟抖动），每次一轮任务并领取积分', budget_ms: 600000 });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
