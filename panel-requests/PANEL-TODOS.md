@@ -6,6 +6,36 @@
 
 ---
 
+## ✅ 已实现：`fetch` 支持 `redirect: 'manual'` + `Headers.getSetCookie()`
+
+**（2026-11-08 已由 panel `6fe1ace` 实现并发布；本节留作验收记录）**
+
+**当初的问题**：免登 / OpenID 类链路的会话 cookie 在 **302 那一跳**用 `Set-Cookie` 下发
+（一次十几条），宿主的 `fetch` 只认 `redirect:'follow'` 且跟跳后丢弃中间响应头，
+插件完全无法复现。央视频→兑吧签到就卡在这：`autologin` 的 11 条 cookie 全丢，最终落到
+`/sign/notlogin`。
+
+**已做的改动**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `src/hostapi.rs` | `do_http_fetch` 新增 `redirect` 选项（`follow`/`manual`/`error`）；`manual`/`error` 不跟跳、3xx 原样交回；返回体加 `set_cookie` 数组（`Set-Cookie` 不允许合并） |
+| `src/jscompat/fetch.js` | 放行 `manual`/`error` 并透传；`responseFromHost` 重建多条 `Set-Cookie`；新增 `Headers.prototype.getSetCookie()` |
+| 测试 | 原「只支持 follow」的断言改为 `redirect_policy_is_follow_manual_or_error`；全套 627 passed / 0 failed |
+
+**验收读数**（QuickJS 引擎，真机）：
+```
+hop1: status=302 setCookie=0   jar=0
+hop2: status=302 setCookie=11  jar=11     ← 修复前这里全丢
+hop3: status=302 setCookie=0   jar=11
+hop4: status=200 setCookie=0   jar=11
+```
+
+**插件侧可删的分支**：不再需要「必须切 Node/Bun 引擎」的守卫；现在只剩一句
+能力探测（老面板报 `redirect` 不支持时翻译成人话）。
+
+---
+
 ## 1. `http_fetch` 支持 base64 请求体（一行 schema，代价最小）
 
 **现状**（`docs/host-api.md` §1.4 / `docs/plugin-api.md` §4.10）：

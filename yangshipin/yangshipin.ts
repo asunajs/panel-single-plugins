@@ -825,7 +825,17 @@ type DuibaSignResult = {
 
 /** 低层请求：需要读 set-cookie / location，所以不走 h5Http。 */
 async function duFetch(url: string, init: { method: string; headers: Record<string, string>; body?: string }) {
-  const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any });
+  let res: any;
+  try {
+    res = await fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any });
+  } catch (e) {
+    const msg = errText(e);
+    // 面板 0.3.x 之前的 fetch 只认 redirect:'follow'。这不是插件写错，是宿主能力缺口。
+    if (/redirect/i.test(msg)) {
+      throw new Error(`宿主 fetch 不支持 redirect:'manual'（跟跳会丢掉 Set-Cookie），需要面板 0.3.x+：${msg}`);
+    }
+    throw e;
+  }
   const text = await res.text();
   let setCookies: string[] = [];
   const anyHeaders = res.headers as any;
@@ -1464,6 +1474,19 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
   }));
 }, { budget_ms: 600000 });
 
+register_route(WEB_API + '/signin', 'POST', async () => {
+  const t = needTokens();
+  const r = await duibaSign(t);
+  const progress = r.consecutiveCount !== null
+    ? `连续 ${r.consecutiveCount} 天` + (r.targetCount !== null ? `，周期还差 ${Math.max(0, r.targetCount + 1 - r.consecutiveCount)} 天` : '')
+    : '';
+  return routeJson(r.ok ? 200 : 502, {
+    ok: r.ok,
+    message: `签到：${r.desc}` + (progress ? `（${progress}）` : ''),
+    signin: r,
+  });
+}, { budget_ms: 60000 });
+
 register_route(WEB_API + '/cookies', 'GET', () => {
   const t = needTokens();
   const exp = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
@@ -1518,4 +1541,4 @@ register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
   log(r.failed ? 'warn' : 'info', summary);
 }, { summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分', budget_ms: 600000 });
 
-log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
+log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；引擎 ' + (IS_NODE ? 'node' : 'quickjs') + '）');
