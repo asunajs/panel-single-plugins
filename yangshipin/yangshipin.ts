@@ -21,6 +21,7 @@ import {
   config,
   http_fetch,
   log,
+  register_cron,
   register_handler,
   register_nav,
   register_route,
@@ -801,16 +802,26 @@ async function collectPoints(s: Tokens): Promise<{ ok: boolean; message: string 
 
 type YspConfig = { phone: string; device: DeviceProfile };
 
-function readConfig(): YspConfig {
-  let cfg: any;
-  try { cfg = config(); } catch (e) { throw new Error('读取插件配置失败：' + errText(e)); }
-  cfg = cfg || {};
-  const phone = text(cfg.phone);
-  if (!phone) {
-    throw new Error('还没有配置手机号。打开「插件列表 → 配置」，添加一项 phone（11 位手机号）。');
-  }
+/**
+ * 取配置。手机号优先用 state（WebUI 登录时写进去的），config 只是补充 ——
+ * 否则「WebUI 登录成功、跑任务却抱怨没配 phone」这种自相矛盾会天天发生。
+ */
+function resolveConfig(): YspConfig {
+  const st = readState();
+  let cfg: any = {};
+  try { cfg = config() || {}; } catch { /* config 不可用也要能靠 state 跑 */ }
+  const phone = text(st.phone) || text(cfg.phone);
   const device: DeviceProfile = { ...DEFAULT_DEVICE, ...(cfg.device || {}) };
   return { phone, device };
+}
+
+/** 严格版：要求配置里真的有手机号（发码/登录用）。 */
+function readConfig(): YspConfig {
+  const cfg = resolveConfig();
+  if (!cfg.phone) {
+    throw new Error('还没有手机号。打开「插件列表 → 配置」添加 phone，或在插件页「添加账号」登录。');
+  }
+  return cfg;
 }
 
 // 状态文件落插件数据目录。node:fs 三个引擎都有（QuickJS 那份被围栏在插件自己
@@ -898,31 +909,74 @@ async function hTasks(): Promise<void> {
  * 一键做任务：TaskComplete ×7（Node/Bun 引擎）→ 领取（H5）。
  * maxCompleteCount 是上限（观看类 3/天），到顶幂等，不是错误。
  */
+const TASK_LIST: Array<[number, string]> = [
+  [14, '观看电视'], [17, '观看视频'], [13, '观看直播'],
+  [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
+];
+
+type DoTasksResult = { ok: number; skip: number; failed: number; collect: string; points: number | null; lines: string[] };
+
+/**
+ * 做任务的核心（handler / WebUI 路由 / 定时任务三处共用，别再各写一份）。
+ * onLine 让调用方决定往哪输出：日志、HTTP 响应、还是干脆不要。
+ */
+async function doTasksCore(
+  opts: { likeFirst?: boolean; onLine?: (s: string) => void; maxRounds?: number } = {},
+): Promise<DoTasksResult> {
+  const cfg = resolveConfig();
+  const t = needTokens();
+  const lines: string[] = [];
+  const push = (s: string) => { lines.push(s); opts.onLine?.(s); };
+
+  // ⚠ 观看类任务的 maxCompleteCount 是 3：一次 TaskComplete 只吃到 1 次，
+  // 想要「今天拿满」就得跑 3 轮。默认 1 轮（WebUI 按钮要快），定时任务传 3。
+  const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 1, 5));
+  let ok = 0; let skip = 0; let failed = 0;
+
+  if (opts.likeFirst) {
+    try { await likeAction(cfg, t); push('✓ 已点赞'); }
+    catch (e) { push('⚠ 点赞失败：' + errText(e)); }
+  }
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (round > 0) {
+      await wait(1500 + Math.floor(Math.random() * 1500)); // 轮次之间拉长
+      push(`—— 第 ${round + 1} 轮 ——`);
+    }
+    let gained = 0;
+    for (let i = 0; i < TASK_LIST.length; i++) {
+      const [id, name] = TASK_LIST[i];
+      if (i > 0) await wait(taskGapMs()); // 任务之间随机间隔，别连成一串
+      try {
+        const r = await completeTask(cfg, t, id);
+        if (r.ok && r.message === 'success') { ok++; gained++; push(`✓ [${name}] ${r.message}`); }
+        else if (r.ok) { skip++; push(`· [${name}] ${r.message}`); }
+        else { failed++; push(`✗ [${name}] ${r.message}`); }
+      } catch (e) {
+        failed++;
+        push(`✗ [${name}] ${errText(e)}`);
+      }
+    }
+    // 一轮下来一点新进展都没有 → 今天的额度用完了，别再空转
+    if (gained === 0) break;
+  }
+
+  await wait(400); // 结算与领取之间也留一口气
+  const c = await collectPoints(t);
+  const points = await pointTotal(t);
+  push(`领取：${c.message}`);
+
+  return { ok, skip, failed, collect: c.message, points, lines };
+}
+
 async function hDoTasks(): Promise<void> {
   start('央视频做任务');
-  const cfg = readConfig();
-  const t = needTokens();
-  const TASK_IDS: Array<[number, string]> = [
-    [14, '观看电视'], [17, '观看视频'], [13, '观看直播'],
-    [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
-  ];
-  let ok = 0; let skip = 0;
-  for (let i = 0; i < TASK_IDS.length; i++) {
-    const [id, name] = TASK_IDS[i];
-    if (i > 0) await wait(taskGapMs()); // 任务之间随机间隔，别连成一串
-    try {
-      const r = await completeTask(cfg, t, id);
-      if (r.ok && r.message === 'success') { ok++; log('info', `  [${name}] ✓ ${r.message}`); }
-      else if (r.ok) { skip++; log('info', `  [${name}] · ${r.message}`); }
-      else { log('warn', `  [${name}] ✗ ${r.message}`); }
-    } catch (e) {
-      log('warn', `  [${name}] ✗ ${errText(e)}`);
-    }
-  }
-  await wait(400);
-  const c = await collectPoints(t);
-  const total = await pointTotal(t);
-  success(`任务结算 ${ok} 新完成 / ${skip} 已结算；${c.message}；当前积分 ${total ?? '?'}`);
+  // 手动触发只跑 1 轮：要快。想一次拿满就在插件页点「做任务」多次，或等定时任务（3 轮）
+  const r = await doTasksCore({ onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  const summary = `任务结算 ${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
+    + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
+  if (r.failed && !r.ok && !r.skip) throw new Error(summary);
+  success(summary);
 }
 
 /** 点赞一次（写操作，幂等）。 */
@@ -1062,38 +1116,13 @@ register_route(WEB_API + '/tasks', 'GET', () => {
 
 register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
   const body = parseBody(req);
-  const t = needTokens();
-  const cfg: YspConfig = { phone: readState().phone ?? '', device: (config() as any)?.device ?? DEFAULT_DEVICE };
-  const TASKS: Array<[number, string]> = [
-    [14, '观看电视'], [17, '观看视频'], [13, '观看直播'],
-    [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
-  ];
-  const run = async () => {
-    const lines: string[] = [];
-    let ok = 0; let skip = 0;
-    if (body?.likeFirst) {
-      try { await likeAction(cfg, t); lines.push('✓ 已点赞'); } catch (e) { lines.push('⚠ 点赞失败：' + errText(e)); }
-    }
-    for (let i = 0; i < TASKS.length; i++) {
-      const [id, name] = TASKS[i];
-      if (i > 0) await wait(taskGapMs()); // 与 handler 同一套节流
-      try {
-        const r = await completeTask(cfg, t, id);
-        if (r.ok && r.message === 'success') { ok++; lines.push(`✓ [${name}] ${r.message}`); }
-        else if (r.ok) { skip++; lines.push(`· [${name}] ${r.message}`); }
-        else { lines.push(`✗ [${name}] ${r.message}`); }
-      } catch (e) { lines.push(`✗ [${name}] ${errText(e)}`); }
-    }
-    await wait(400); // 结算与领取之间也留一口气
-    const c = await collectPoints(t);
-    const total = await pointTotal(t);
-    lines.push(`领取：${c.message}`);
-    return routeJson(200, {
-      ok: true, message: `任务结算 ${ok} 新完成 / ${skip} 已结算；当前积分 ${total ?? '?'}`,
-      lines, points: total,
-    });
-  };
-  return run();
+  return doTasksCore({ likeFirst: !!body?.likeFirst }).then((r) => routeJson(200, {
+    ok: true,
+    message: `任务结算 ${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
+      + `；当前积分 ${r.points ?? '?'}`,
+    lines: r.lines,
+    points: r.points,
+  }));
 });
 
 register_route(WEB_API + '/cookies', 'GET', () => {
@@ -1111,5 +1140,27 @@ register_route(WEB_API + '/cookies', 'GET', () => {
 });
 
 register_nav({ label: '央视频', icon: '📺' });
+
+/* ============================================================
+ * 定时任务：每天 17:00 前后随机 1 小时
+ *
+ * `~1h` 是面板 cron 的抖动后缀（host-api §1.2.8），实际触发落在
+ * [16:00, 18:00) 之间随机 —— 固定时刻是脚本指纹，抖动让它每天都不同。
+ * 只往后偏（17:00–18:00）就把 `~1h` 换成 `+1h`。
+ * ============================================================ */
+register_cron('每日任务', '0 17 * * * ~1h', async () => {
+  start('央视频每日任务');
+  const st = readState();
+  if (!st.tokens?.jce_token) {
+    log('warn', '没有登录态，跳过本次 —— 到插件页「添加账号」登录一次即可');
+    return;
+  }
+  const r = await doTasksCore({ maxRounds: 3, onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  const summary = `每日任务：${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
+    + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
+  // 全军覆没才让面板记一次失败；部分失败（比如到上限）只记 warn
+  if (r.failed && !r.ok && !r.skip) throw new Error(summary);
+  log(r.failed ? 'warn' : 'info', summary);
+}, { summary: '每天 17:00 前后随机 1 小时，结算 7 个任务并领取积分' });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
