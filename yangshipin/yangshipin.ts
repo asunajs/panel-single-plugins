@@ -66,16 +66,44 @@ function wait(ms: number): Promise<void> {
  * 任务之间的间隔：默认 35–65 秒随机，`config().task_gap_ms` 可覆盖（钳到 [30s, 300s]）。
  * 见下方 taskGapMs 里的说明 —— 真人做一个任务就是几十秒起步。
  */
-function taskGapMs(): number {
-  // 默认 35–65 秒。低于 30 秒基本等于明说「我是脚本」：真人做完一个任务
-  // （看视频 / 点赞 / 分享）至少几十秒，7 个包在十几秒内发完是最典型的机器指纹。
-  // 服务端也可能对「间隔恒定」单独打标，所以这里必须是随机区间而不是固定值。
-  let base = 35000;
-  try {
-    const v = Number((config() as any)?.task_gap_ms);
-    if (Number.isFinite(v) && v > 0) base = Math.min(Math.max(v, 30000), 300000);
-  } catch { /* 读配置失败用默认值 */ }
-  return base + Math.floor(Math.random() * 30000);
+/**
+ * 每个动作该等多久 —— 按**动作本身**分，不是一刀切。
+ *
+ * 「观看一次视频」任务要求真的看 30 秒，同一个观看任务连做 3 次就必须跨过
+ * 30 秒这条线；但「点个赞」「签个到」真人两秒钟就完事，让它们也等 30 秒
+ * 既不自然也不必要。
+ *
+ *   watch  同一观看任务两次之间：35–50 秒（任务要求 30 秒，留余量）
+ *   follow 同一关注任务两次之间：8–20 秒（点进去、点关注、退出来）
+ *   quick  点赞/分享/签到：各只做 1 次，没有「同一任务两次」，用不到
+ *   switch 换到另一个任务：3–8 秒（切页面/切动作）
+ */
+const WATCH_TASKS = new Set([13, 14, 17]);   // 观看直播 / 电视 / 视频
+const FOLLOW_TASKS = new Set([37]);          // 关注央视频号
+const SWITCH_GAP_MS = 3000;
+const SWITCH_JITTER_MS = 5000;
+
+/** 同一任务连续两次之间的间隔（毫秒）。 */
+function sameTaskGapMs(taskId: number): number {
+  if (WATCH_TASKS.has(taskId)) {
+    // 观看时长是任务的硬要求，允许配置放大，但下限钉死在 32 秒
+    let base = 35000;
+    try {
+      const v = Number((config() as any)?.watch_gap_ms);
+      if (Number.isFinite(v) && v > 0) base = Math.min(Math.max(v, 32000), 120000);
+    } catch { /* 用默认值 */ }
+    return base + Math.floor(Math.random() * 15000);   // 35–50 秒
+  }
+  if (FOLLOW_TASKS.has(taskId)) {
+    return 8000 + Math.floor(Math.random() * 12000);   // 8–20 秒
+  }
+  // 其余任务每天只做 1 次，走不到这个分支
+  return SWITCH_GAP_MS + Math.floor(Math.random() * SWITCH_JITTER_MS);
+}
+
+/** 换到另一个任务的间隔。 */
+function switchGapMs(): number {
+  return SWITCH_GAP_MS + Math.floor(Math.random() * SWITCH_JITTER_MS);   // 3–8 秒
 }
 
 // 引擎探测已经不需要了：二进制 fetch / node:zlib / node:fs 三个引擎都有等价实现。
@@ -918,8 +946,6 @@ const TASK_LIST: Array<[number, string]> = [
 
 /** 面板 budget 硬上限 10 分钟；留 2 分钟给请求本身、领取和抖动，自己卡在 8 分钟。 */
 const TASK_BUDGET_MS = 480_000;
-const MIN_GAP_MS = 30_000;
-const MAX_GAP_MS = 65_000;
 
 type PlanItem = { id: number; name: string; need: number };
 type QueueItem = { id: number; name: string };
@@ -954,11 +980,17 @@ async function planTasks(t: Tokens): Promise<PlanItem[]> {
  * 计划 → 请求序列。按轮交错：第 1 轮把所有任务过一遍，
  * 第 2 轮起只补没满的（观看/关注），点赞/分享/签到不会出现第二次。
  */
+/**
+ * 计划 → 请求序列。**同一个任务连着做完**（电视×3、视频×3…），而不是按轮交错。
+ *
+ * 按轮交错（旧做法）虽然也能让观看的 3 次拉开距离，但代价是所有相邻请求都成了
+ * 「不同任务」，只能统一用长间隔 —— 点赞、分享也被迫等 30 秒，不像真人。
+ * 连着做则把「同一任务」和「换任务」分清：前者用动作间隔，后者用切换间隔。
+ */
 function buildQueue(plan: PlanItem[]): QueueItem[] {
   const queue: QueueItem[] = [];
-  const rounds = plan.reduce((m, p) => Math.max(m, p.need), 0);
-  for (let r = 0; r < rounds; r++) {
-    for (const p of plan) if (r < p.need) queue.push({ id: p.id, name: p.name });
+  for (const p of plan) {
+    for (let i = 0; i < p.need; i++) queue.push({ id: p.id, name: p.name });
   }
   return queue;
 }
@@ -998,12 +1030,18 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
     push(`计划：${plan.filter((p) => p.need > 0).map((p) => `${p.name}×${p.need}`).join('、')}（共 ${queue.length} 个包）`);
   }
 
-  // ② 间隔：按队列长度反推，保证不超预算
-  const want = taskGapMs();
-  const fit = queue.length > 1 ? Math.floor(TASK_BUDGET_MS / (queue.length - 1)) : want;
-  const gap = Math.max(MIN_GAP_MS, Math.min(want, fit, MAX_GAP_MS));
-  if (queue.length > 1 && gap < want) {
-    push(`（${queue.length} 个包要发，间隔按预算压到 ${Math.round(gap / 1000)} 秒）`);
+  // ② 间隔按动作分级：同一任务连做用动作间隔，换任务用切换间隔。
+  //    预估总时长，超过预算就把长间隔等比例压下来（观看类不低于 32 秒）。
+  const estimate = (() => {
+    let s = 0;
+    for (let i = 1; i < queue.length; i++) {
+      s += queue[i].id === queue[i - 1].id ? sameTaskGapMs(queue[i].id) : switchGapMs();
+    }
+    return s;
+  })();
+  const squeeze = estimate > TASK_BUDGET_MS * 0.9 ? (TASK_BUDGET_MS * 0.9) / estimate : 1;
+  if (squeeze < 1) {
+    push(`（预估 ${Math.round(estimate / 60000)} 分钟超出预算，间隔压缩到 ${Math.round(squeeze * 100)}%）`);
   }
 
   // ③ 逐个发
@@ -1016,7 +1054,11 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
       push(`⏱ 时间预算用完，还剩 ${queue.length - i} 个包没发（下次触发会接着做）`);
       break;
     }
-    if (ok + skip + failed > 0) await wait(gap);
+    if (ok + skip + failed > 0) {
+      const prev = queue[i - 1];
+      const base = prev && prev.id === item.id ? sameTaskGapMs(item.id) : switchGapMs();
+      await wait(Math.max(500, Math.round(base * squeeze)));
+    }
     try {
       const r = await completeTask(cfg, t, item.id);
       if (r.ok && r.message === 'success') {
