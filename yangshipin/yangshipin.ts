@@ -923,7 +923,7 @@ const MAX_GAP_MS = 65_000;
 
 type PlanItem = { id: number; name: string; need: number };
 type QueueItem = { id: number; name: string };
-type DoTasksResult = { ok: number; skip: number; failed: number; collect: string; points: number | null; lines: string[] };
+type DoTasksResult = { ok: number; skip: number; failed: number; planned: number; collect: string; points: number | null; lines: string[] };
 
 /**
  * 查**一次**现状，算出每个任务还差几次。
@@ -992,7 +992,8 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
   const plan = await planTasks(t);
   const queue = buildQueue(plan);
   if (!queue.length) {
-    push('今天的任务都已满额，没有要发的包');
+    // 兜底场景（通常是晚 5 点那次）：今天已经做满，一个任务包都不发
+    push('今天已全部完成 · 兜底检查，不发送任何任务请求');
   } else {
     push(`计划：${plan.filter((p) => p.need > 0).map((p) => `${p.name}×${p.need}`).join('、')}（共 ${queue.length} 个包）`);
   }
@@ -1038,7 +1039,7 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
   const points = await pointTotal(t);
   push(`领取：${c.message}`);
 
-  return { ok, skip, failed, collect: c.message, points, lines };
+  return { ok, skip, failed, planned: queue.length, collect: c.message, points, lines };
 }
 
 async function hDoTasks(): Promise<void> {
@@ -1240,6 +1241,11 @@ register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
     return;
   }
   const r = await doTasksCore({ onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  // 兜底空跑（今天早上已经做满）：一句话说完，不占日志版面
+  if (r.planned === 0) {
+    log('info', `兜底检查：今天已完成，未发送任务请求；当前积分 ${r.points ?? '?'}`);
+    return;
+  }
   const summary = `每日任务：${r.ok} 新完成 / ${r.skip} 已满` + (r.failed ? ` / ${r.failed} 失败` : '')
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
