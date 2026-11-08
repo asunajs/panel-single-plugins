@@ -1,7 +1,8 @@
 # 央视频（yangshipin）短信登录 + 积分任务
 
-单文件面板插件。手机号 + 短信验证码登录央视频 App 通道，保存登录态，
-一键结算全部积分任务并领取（实测积分 15 → 80）。
+单文件面板插件，**带 WebUI**（照 mgmusic-plugin 形态）。侧边栏「📺 央视频」进入，
+短信登录、任务结算、积分领取、cookie 导出都在页面里完成，不用手改配置文件。
+实测积分 15 → 80（一夜 7/7 任务写满）。
 
 ## 安装
 
@@ -13,14 +14,31 @@
 也有 `node:zlib` / `node:fs`，所以发码/登录/结算这条二进制路径与 Node 分支**逐字相同**
 ——文件里已经没有任何 `IS_NODE` 分支了。
 
-## 使用（人机配合，一次登录长期可用）
+## 使用（WebUI，一次登录长期可用）
 
-1. 「插件列表 → 配置」添加 `phone`（11 位手机号）；
-2. 运行任务 `send-code` → 去手机上看短信；
-3. 把 6 位数字填进配置项 `code`，运行 `login`；
-4. 完成。之后每天跑一次 `do-tasks`（可挂面板定时任务）即可。
+1. 侧边栏出现「📺 央视频」入口（`register_nav`）；
+2. 页面输入手机号 → 「发验证码」→ 输入短信码 → 「登录」；
+3. 「一键做任务」结算 7 个任务并领取（可选"先点赞一次"）。
 
-## handlers
+登录态存插件数据目录 `data/state.json`（0600），之后任务无需重复登录。
+配置文件方式（`phone`/`code` + handlers）仍然可用，与 WebUI 等价。
+
+## WebUI 路由（`register_route`，页面同源 fetch）
+
+| 路由 | 方法 | 作用 |
+| --- | --- | --- |
+| `api/status` | GET | 登录态 + 积分（首屏） |
+| `api/login/send` | POST | 发短信验证码（写操作） |
+| `api/login/verify` | POST | 用验证码登录并落盘 token |
+| `api/logout` | POST | 清除登录态 |
+| `api/tasks` | GET | 任务列表 + 当前积分 |
+| `api/do-tasks` | POST | 结算全部任务 + 领取（body 可带 `{likeFirst: true}`） |
+| `api/cookies` | GET | 导出 Netscape cookie |
+
+页面 `index.html` 由面板静态服务在 `/plugins/yangshipin/`；
+侧边栏入口 `register_nav({ label: '央视频', icon: '📺' })`。
+
+## 任务 handlers（可与 WebUI 并用）
 
 三个引擎（QuickJS / Node / Bun）行为一致，没有「哪个引擎不能跑」这回事。
 

@@ -19,8 +19,11 @@
 
 import {
   config,
+  http_fetch,
   log,
   register_handler,
+  register_nav,
+  register_route,
   start,
   success,
 } from 'host-api';
@@ -29,8 +32,11 @@ import fs from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
 // ======================================================================
-// 引擎探测与小工具
+// 引擎探测：已不需要（二进制 fetch / node:zlib / node:fs 三引擎同形）。
+// 留一个布尔值只为 UI 显示当前引擎名。
 // ======================================================================
+
+const IS_NODE = Boolean((globalThis as any).process?.versions?.node || (globalThis as any).process?.versions?.bun);
 
 type HttpResult = { status?: number; headers?: Record<string, string>; body?: Uint8Array; error?: string };
 type HttpRequest = { method: string; headers: Record<string, string>; body: Uint8Array; timeoutMs: number };
@@ -664,6 +670,7 @@ const VPLATFORM = '5'; // iOS 端必须 5；9 → 一律 15006
 type Tokens = {
   guid: string; vuserid: string; openid: string;
   access_token: string; refresh_token: string; vusession: string; jce_token: string;
+  nickname?: string;
 };
 
 type H5Http = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) =>
@@ -915,11 +922,139 @@ async function hExportCookies(): Promise<void> {
 
 register_handler('send-code', hSendCode, { summary: '发短信验证码（写操作）' });
 register_handler('login', hLogin, { summary: '用 code 配置项登录并保存 token（写操作）' });
-register_handler('session-check', hSessionCheck, { summary: 'App 侧会话验活（需 Node/Bun 引擎）' });
-register_handler('h5-check', hH5Check, { summary: 'H5 会话自检（QuickJS 可跑）' });
-register_handler('tasks', hTasks, { summary: '任务列表与积分（QuickJS 可跑）' });
-register_handler('do-tasks', hDoTasks, { summary: '一键结算全部任务并领取积分（写操作，需 Node/Bun）' });
+register_handler('session-check', hSessionCheck, { summary: 'App 侧会话验活' });
+register_handler('h5-check', hH5Check, { summary: 'H5 会话自检' });
+register_handler('tasks', hTasks, { summary: '任务列表与积分' });
+register_handler('do-tasks', hDoTasks, { summary: '一键结算全部任务并领取积分（写操作）' });
 register_handler('like', hLike, { summary: '点赞一次（写操作，幂等）' });
-register_handler('export-cookies', hExportCookies, { summary: '导出 H5 cookie（QuickJS 可跑）' });
+register_handler('export-cookies', hExportCookies, { summary: '导出 H5 cookie' });
+
+/* ============================================================
+ * WebUI（照 mgmusic-plugin 的形态）：
+ *   index.html 静态页（面板服务在 /plugins/yangshipin/）
+ *   + register_route 登录/任务 API
+ *   + register_nav 侧边栏入口
+ * 页面里的相对路径 fetch('api/xxx') 命中下面这些路由（同源，无需 CORS）。
+ * ============================================================ */
+
+const WEB_API = '/plugins/yangshipin/api';
+
+function routeJson(status: number, obj: any) {
+  return { status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) };
+}
+
+function parseBody(req: any): any {
+  if (!req || req.body === undefined || req.body === null || req.body === '') return {};
+  if (typeof req.body === 'object') return req.body;
+  try { return JSON.parse(req.body); } catch { throw new Error('请求体不是 JSON'); }
+}
+
+/** UI 状态：登录态 + 积分，页面首屏一次拿全。 */
+function uiStatus() {
+  const st = readState();
+  const t = st.tokens;
+  if (!t?.jce_token) return { ok: true, loggedIn: false };
+  return {
+    ok: true,
+    loggedIn: true,
+    vuid: t.vuserid,
+    nickname: t.nickname,
+    loggedAt: st.loggedAt,
+    engine: IS_NODE ? 'node' : 'quickjs',
+  };
+}
+
+register_route(WEB_API + '/status', 'GET', () => routeJson(200, uiStatus()));
+
+register_route(WEB_API + '/login/send', 'POST', (req: any) => {
+  const body = parseBody(req);
+  const phone = text(body?.phone);
+  if (!/^\d{11}$/.test(phone)) return routeJson(400, { ok: false, message: '请输入 11 位手机号' });
+  const cfg: YspConfig = { phone, device: (config() as any)?.device ?? DEFAULT_DEVICE };
+  return getCode(cfg).then((r) =>
+    r.ok ? routeJson(200, { ok: true, message: r.message })
+         : routeJson(400, { ok: false, message: r.message }));
+});
+
+register_route(WEB_API + '/login/verify', 'POST', (req: any) => {
+  const body = parseBody(req);
+  const phone = text(body?.phone);
+  const code = text(body?.code);
+  if (!/^\d{11}$/.test(phone)) return routeJson(400, { ok: false, message: '手机号形状不对' });
+  if (!/^\d{4,8}$/.test(code)) return routeJson(400, { ok: false, message: '验证码应为 4–8 位数字' });
+  const cfg: YspConfig = { phone, device: (config() as any)?.device ?? DEFAULT_DEVICE };
+  return newLogin(cfg, code).then((r) => {
+    if (!r.ok || !r.tokens) return routeJson(400, { ok: false, message: r.message });
+    writeState({ tokens: r.tokens, phone, loggedAt: new Date().toISOString() });
+    return routeJson(200, { ok: true, message: r.message, vuid: r.tokens.vuserid });
+  });
+});
+
+register_route(WEB_API + '/logout', 'POST', () => {
+  const st = readState();
+  writeState({ ...st, tokens: undefined });
+  return routeJson(200, { ok: true, message: '已退出' });
+});
+
+register_route(WEB_API + '/tasks', 'GET', () => {
+  const t = needTokens();
+  return pointTotal(t).then(async (total) => {
+    const r = await listTasks(t);
+    if (!r.ok) return routeJson(400, { ok: false, message: r.message });
+    const lines = [`当前积分：${total ?? '?'}`].concat(
+      r.tasks.map((x) => `id=${x.id} ${x.name} +${x.point}分 status=${x.status} 完成 ${x.completedCount ?? 0}/${x.maxCompleteCount ?? '?'}`),
+    );
+    return routeJson(200, { ok: true, lines, points: total });
+  });
+});
+
+register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
+  const body = parseBody(req);
+  const t = needTokens();
+  const cfg: YspConfig = { phone: readState().phone ?? '', device: (config() as any)?.device ?? DEFAULT_DEVICE };
+  const TASKS: Array<[number, string]> = [
+    [14, '观看电视'], [17, '观看视频'], [13, '观看直播'],
+    [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
+  ];
+  const run = async () => {
+    const lines: string[] = [];
+    let ok = 0; let skip = 0;
+    if (body?.likeFirst) {
+      try { await likeAction(cfg, t); lines.push('✓ 已点赞'); } catch (e) { lines.push('⚠ 点赞失败：' + errText(e)); }
+    }
+    for (const [id, name] of TASKS) {
+      try {
+        const r = await completeTask(cfg, t, id);
+        if (r.ok && r.message === 'success') { ok++; lines.push(`✓ [${name}] ${r.message}`); }
+        else if (r.ok) { skip++; lines.push(`· [${name}] ${r.message}`); }
+        else { lines.push(`✗ [${name}] ${r.message}`); }
+      } catch (e) { lines.push(`✗ [${name}] ${errText(e)}`); }
+    }
+    const c = await collectPoints(t);
+    const total = await pointTotal(t);
+    lines.push(`领取：${c.message}`);
+    return routeJson(200, {
+      ok: true, message: `任务结算 ${ok} 新完成 / ${skip} 已结算；当前积分 ${total ?? '?'}`,
+      lines, points: total,
+    });
+  };
+  return run();
+});
+
+register_route(WEB_API + '/cookies', 'GET', () => {
+  const t = needTokens();
+  const exp = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+  const pairs: Array<[string, string]> = [
+    ['guid', t.guid], ['openid', t.openid], ['vuserid', t.vuserid],
+    ['access_token', t.access_token], ['refresh_token', t.refresh_token],
+    ['vusession', t.vusession], ['vplatform', '5'], ['ysptokenappid', '1400227916'],
+  ];
+  const netscape = ['# Netscape HTTP Cookie File']
+    .concat(pairs.map(([k, v]) => `.yangshipin.cn\tTRUE\t/\tFALSE\t${exp}\t${k}\t${v}`))
+    .join('\n');
+  return routeJson(200, { ok: true, netscape, json: pairs.map(([name, value]) => ({ name, value, domain: '.yangshipin.cn', path: '/', secure: true })) });
+});
+
+register_nav({ label: '央视频', icon: '📺' });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
