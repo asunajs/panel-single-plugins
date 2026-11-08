@@ -916,33 +916,71 @@ const TASK_LIST: Array<[number, string]> = [
   [37, '关注央视频号'], [42, '点赞视频'], [43, '分享'], [28, '每日签到'],
 ];
 
+/** 面板 budget 硬上限 10 分钟；留 2 分钟给请求本身、领取和抖动，自己卡在 8 分钟。 */
+const TASK_BUDGET_MS = 480_000;
+const MIN_GAP_MS = 30_000;
+const MAX_GAP_MS = 65_000;
+
+type PlanItem = { id: number; name: string; need: number };
+type QueueItem = { id: number; name: string };
 type DoTasksResult = { ok: number; skip: number; failed: number; collect: string; points: number | null; lines: string[] };
 
 /**
- * 做任务的核心（handler / WebUI 路由 / 定时任务三处共用，别再各写一份）。
- * onLine 让调用方决定往哪输出：日志、HTTP 响应、还是干脆不要。
- *
- * ⚠ **一次调用只处理一个账号，也别指望它处理多个。**
- * 一轮 7 个包 × 35–65 秒 ≈ 5 分钟，而面板 budget 上限是 10 分钟（host-api §1.2.5），
- * 超了是 SIGKILL 整个进程组、插件内存状态全丢。所以：
- *   1 账号 = 1 轮 ≈ 5 分钟  → 安全
- *   3 账号塞进一次调用 ≈ 15 分钟 → 必被砍
- * 多账号的正确形态是「一个账号一条 register_cron」（见文件末尾），
- * 让面板按任务分别计时；本函数只认 readState() 里的那一个会话。
- * 真要支持多账号，先把 readState/writeState 改成 accounts 数组，
- * 再按账号循环注册任务 —— 别在这里加 for 循环。
+ * 查**一次**现状，算出每个任务还差几次。
+ * 已满的任务直接 need=0 —— 一个包都不发（对已完成的任务发 TaskComplete，
+ * 服务端只会回 task has been complete，纯属浪费请求、还多一次被风控看到的机会）。
  */
-async function doTasksCore(
-  opts: { likeFirst?: boolean; onLine?: (s: string) => void; maxRounds?: number } = {},
-): Promise<DoTasksResult> {
+async function planTasks(t: Tokens): Promise<PlanItem[]> {
+  const fallback: PlanItem[] = TASK_LIST.map(([id, name]) => ({ id, name, need: 1 }));
+  try {
+    const r = await listTasks(t);
+    if (!r.ok || !r.tasks.length) return fallback;
+    const plan = r.tasks.map((x) => {
+      const max = Number(x.maxCompleteCount ?? 1);
+      const done = Number(x.completedCount ?? 0);
+      return {
+        id: Number(x.id),
+        name: x.name || String(x.id),
+        need: Math.max(0, (Number.isFinite(max) ? max : 1) - (Number.isFinite(done) ? done : 0)),
+      };
+    });
+    return plan.filter((x) => x.need > 0);
+  } catch {
+    return fallback; // 查不到就保守各发一次
+  }
+}
+
+/**
+ * 计划 → 请求序列。按轮交错：第 1 轮把所有任务过一遍，
+ * 第 2 轮起只补没满的（观看/关注），点赞/分享/签到不会出现第二次。
+ */
+function buildQueue(plan: PlanItem[]): QueueItem[] {
+  const queue: QueueItem[] = [];
+  const rounds = plan.reduce((m, p) => Math.max(m, p.need), 0);
+  for (let r = 0; r < rounds; r++) {
+    for (const p of plan) if (r < p.need) queue.push({ id: p.id, name: p.name });
+  }
+  return queue;
+}
+
+/**
+ * 做任务的核心（handler / WebUI 路由 / 定时任务三处共用）。
+ *
+ * 设计要点：
+ *   1. **一次跑完**：查一次状态 → 只发还差次数的包 → 领取。没有「跑几轮」的概念，
+ *      「3 次」是同一个任务要发 3 个包，不是三次调度。
+ *   2. **只发有效请求**：点赞/分享/签到 maxCompleteCount=1，第一轮之后永不再发。
+ *   3. **间隔自适应预算**：包多就把间隔压到 30 秒下限，包少就放宽到 65 秒，
+ *      保证单次执行稳稳落在面板 10 分钟 budget 内（超了是 SIGKILL）。
+ *   4. **一次调用只处理一个账号**：多账号要各注册一条 cron，别在这里循环。
+ */
+async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => void } = {}): Promise<DoTasksResult> {
+  const deadline = Date.now() + TASK_BUDGET_MS;
   const cfg = resolveConfig();
   const t = needTokens();
   const lines: string[] = [];
   const push = (s: string) => { lines.push(s); opts.onLine?.(s); };
 
-  // ⚠ 观看类任务的 maxCompleteCount 是 3：一次 TaskComplete 只吃到 1 次，
-  // 想要「今天拿满」就得跑 3 轮。默认 1 轮（WebUI 按钮要快），定时任务传 3。
-  const maxRounds = Math.max(1, Math.min(opts.maxRounds ?? 1, 5));
   let ok = 0; let skip = 0; let failed = 0;
 
   if (opts.likeFirst) {
@@ -950,30 +988,52 @@ async function doTasksCore(
     catch (e) { push('⚠ 点赞失败：' + errText(e)); }
   }
 
-  for (let round = 0; round < maxRounds; round++) {
-    if (round > 0) {
-      await wait(1500 + Math.floor(Math.random() * 1500)); // 轮次之间拉长
-      push(`—— 第 ${round + 1} 轮 ——`);
-    }
-    let gained = 0;
-    for (let i = 0; i < TASK_LIST.length; i++) {
-      const [id, name] = TASK_LIST[i];
-      if (i > 0) await wait(taskGapMs()); // 任务之间随机间隔，别连成一串
-      try {
-        const r = await completeTask(cfg, t, id);
-        if (r.ok && r.message === 'success') { ok++; gained++; push(`✓ [${name}] ${r.message}`); }
-        else if (r.ok) { skip++; push(`· [${name}] ${r.message}`); }
-        else { failed++; push(`✗ [${name}] ${r.message}`); }
-      } catch (e) {
-        failed++;
-        push(`✗ [${name}] ${errText(e)}`);
-      }
-    }
-    // 一轮下来一点新进展都没有 → 今天的额度用完了，别再空转
-    if (gained === 0) break;
+  // ① 查一次现状
+  const plan = await planTasks(t);
+  const queue = buildQueue(plan);
+  if (!queue.length) {
+    push('今天的任务都已满额，没有要发的包');
+  } else {
+    push(`计划：${plan.filter((p) => p.need > 0).map((p) => `${p.name}×${p.need}`).join('、')}（共 ${queue.length} 个包）`);
   }
 
-  await wait(400); // 结算与领取之间也留一口气
+  // ② 间隔：按队列长度反推，保证不超预算
+  const want = taskGapMs();
+  const fit = queue.length > 1 ? Math.floor(TASK_BUDGET_MS / (queue.length - 1)) : want;
+  const gap = Math.max(MIN_GAP_MS, Math.min(want, fit, MAX_GAP_MS));
+  if (queue.length > 1 && gap < want) {
+    push(`（${queue.length} 个包要发，间隔按预算压到 ${Math.round(gap / 1000)} 秒）`);
+  }
+
+  // ③ 逐个发
+  const done = new Map<number, number>();   // 任务 id → 本次已成功次数
+  const full = new Set<number>();           // 任务 id → 已满，后续跳过
+  for (let i = 0; i < queue.length; i++) {
+    const item = queue[i];
+    if (full.has(item.id)) continue;
+    if (Date.now() > deadline) {
+      push(`⏱ 时间预算用完，还剩 ${queue.length - i} 个包没发（下次触发会接着做）`);
+      break;
+    }
+    if (ok + skip + failed > 0) await wait(gap);
+    try {
+      const r = await completeTask(cfg, t, item.id);
+      if (r.ok && r.message === 'success') {
+        ok++;
+        const n = (done.get(item.id) ?? 0) + 1;
+        done.set(item.id, n);
+        push(`✓ [${item.name}] 第 ${n} 次`);
+      }
+      else if (r.ok) { skip++; full.add(item.id); push(`· [${item.name}] ${r.message}`); }
+      else { failed++; push(`✗ [${item.name}] ${r.message}`); }
+    } catch (e) {
+      failed++;
+      push(`✗ [${item.name}] ${errText(e)}`);
+    }
+  }
+
+  // ④ 领取
+  await wait(400);
   const c = await collectPoints(t);
   const points = await pointTotal(t);
   push(`领取：${c.message}`);
@@ -1154,42 +1214,31 @@ register_route(WEB_API + '/cookies', 'GET', () => {
 register_nav({ label: '央视频', icon: '📺' });
 
 /* ============================================================
- * 定时任务：17 / 18 / 19 点各跑一次，各带 ±15 分钟抖动
+ * 定时任务：每天 17:00 前后随机 1 小时，一次跑完
  *
- * 为什么是三次而不是一次：服务端的计数语义是「每次 TaskComplete 让
- * completedCount +1，累计到 maxCompleteCount 为止」。观看类/关注的
- * maxCompleteCount 是 3，所以一次执行最多让每个任务 +1 —— 一轮只值 35 分，
- * 全天 70 分要三轮。想在一次执行里循环三轮 = 跑 15 分钟，撑爆面板
- * budget（上限 10 分钟），而且连发三轮本身就是脚本特征。
- * 正确做法是让**调度**去分摊：三次触发、每次一轮，间隔一小时。
+ * **一次执行做完今天所有能做的**：先查一次状态，只给「还差次数」的任务发包
+ * （观看/关注各 3 个包，点赞/分享/签到各 1 个，最多 15 个），间隔按预算自适应，
+ * 全程 6–8 分钟，稳在面板 10 分钟 budget 内。不需要多次调度。
  *
- * `~15m` 是面板 cron 的抖动后缀（host-api §1.2.8）：实际触发落在
- * [t-15m, t+15m] 随机，固定时刻是脚本指纹。三次互不重叠（16:45–19:15）。
- * 只想要下午 5 点一次、不要拿满，就改回 `0 17 * * * ~1h`。
+ * `~1h` 是面板 cron 的抖动后缀（host-api §1.2.8）：实际触发落在 [16:00, 18:00) 随机。
+ * 固定时刻是脚本指纹。只往后偏（17:00–18:00）就换成 `+1h`。
  * ============================================================ */
-// ⚠ 多账号：每个账号各注册一条 register_cron（任务名带账号后缀），
-// 绝不能在**一条**任务里循环账号 —— 3 个账号 × 5 分钟 = 15 分钟，超过 budget 上限直接被砍。
-// 当前实现是单账号（state.json 里一份会话），所以只有一条。
-//
-// 一次任务要跑 5 分钟（7 个包 × 35–65 秒），远超普通任务预期：
-// 声明独占线程，免得同线程的其它插件被我们一起拖住（host-api §1.2.5 明确要求）。
+// 一次任务跑 6–8 分钟（最多 15 个包 × 30–65 秒），远超普通任务预期：
+// 声明独占线程，免得同线程的其它插件被我们一起拖住（host-api §1.2.5 要求）。
 worker_hint('exclusive');
 
-register_cron('每日任务', '0 17-19 * * * ~15m', async () => {
+register_cron('每日任务', '0 17 * * * ~1h', async () => {
   start('央视频每日任务');
   const st = readState();
   if (!st.tokens?.jce_token) {
     log('warn', '没有登录态，跳过本次 —— 到插件页「添加账号」登录一次即可');
     return;
   }
-  // 一次触发只跑一轮：一轮 7 个包 × 35–65 秒 ≈ 5 分钟，装得下 board 的 10 分钟预算；
-  // 拿满靠 17/18/19 三次触发（见上面的表达式注释）。
-  const r = await doTasksCore({ maxRounds: 1, onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
-  const summary = `每日任务：${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
+  const r = await doTasksCore({ onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  const summary = `每日任务：${r.ok} 新完成 / ${r.skip} 已满` + (r.failed ? ` / ${r.failed} 失败` : '')
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
-  // 全军覆没才让面板记一次失败；部分失败（比如到上限）只记 warn
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
   log(r.failed ? 'warn' : 'info', summary);
-}, { summary: '每天 17/18/19 点各一次（±15 分钟抖动），每次一轮任务并领取积分', budget_ms: 600000 });
+}, { summary: '每天 17:00 前后随机 1 小时，一次做完今天所有任务并领取积分', budget_ms: 600000 });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；三个引擎全功能）');
