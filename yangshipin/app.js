@@ -165,7 +165,7 @@ function renderAccounts() {
     run.type = 'button';
     run.textContent = '做任务';
     run.addEventListener('click', () => withBusy(run, async () => {
-      show('正在结算今天的任务。\n观看类同一任务两次之间隔 35–50 秒（任务要求看 30 秒），\n点赞/分享/签到之间只隔几秒，整轮约 5 分钟，请不要关闭页面…');
+      show('正在结算今天的任务（后台执行，关掉这个页面不会中断）。\n观看类同一任务两次之间隔 35–50 秒（任务要求看 30 秒），\n点赞/分享/签到之间只隔几秒，整轮约 5 分钟。\n\n结果会写进面板日志；想在这里看就稍后回来刷新。');
       const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true } });
       showLines((data.lines || []).concat([data.message || '']));
       setState('success', '已完成');
@@ -362,7 +362,7 @@ $('status').addEventListener('click', () => withBusy($('status'), async () => {
 }));
 
 $('run').addEventListener('click', () => withBusy($('run'), async () => {
-  show('正在结算今天的任务。\n观看类同一任务两次之间隔 35–50 秒（任务要求看 30 秒），\n点赞/分享/签到之间只隔几秒，整轮约 5 分钟，请不要关闭页面…');
+  show('正在结算今天的任务（后台执行，关掉这个页面不会中断）。\n观看类同一任务两次之间隔 35–50 秒（任务要求看 30 秒），\n点赞/分享/签到之间只隔几秒，整轮约 5 分钟。\n\n结果会写进面板日志；想在这里看就稍后回来刷新。');
   const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true } });
   showLines((data.lines || []).concat([data.message || '']));
   setState('success', '已完成');

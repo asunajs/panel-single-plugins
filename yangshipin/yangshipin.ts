@@ -62,6 +62,31 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 单步超时上限（毫秒）。任何一次网络/解包都不该超过它。 */
+const STEP_TIMEOUT_MS = 25_000;
+
+/**
+ * 给一步操作套一个硬上限。
+ *
+ * 为什么必须有：面板的 `fetch` 超时只管「请求阶段」，响应体读取、解包、以及
+ * 宿主 RPC 都可能**永久挂住**（QuickJS 的 gunzipSync 走的是同步 RPC，一旦宿主
+ * 不返回，JS 侧连超时都做不到）。没有这层，一次挂起就会吃掉整个 10 分钟预算，
+ * 表现为「任务跑了 10 分钟什么也没干」。
+ */
+async function step<T>(label: string, p: Promise<T>): Promise<T> {
+  let fired = false;
+  const guard = wait(STEP_TIMEOUT_MS).then(() => {
+    fired = true;
+    throw new Error(`${label} 超过 ${STEP_TIMEOUT_MS / 1000} 秒未返回`);
+  });
+  try {
+    return await Promise.race([p, guard]);
+  } finally {
+    // 让 guard 的定时器自然结束；race 之后它的 rejection 不会再被读到
+    void fired;
+  }
+}
+
 /**
  * 任务之间的间隔：默认 35–65 秒随机，`config().task_gap_ms` 可覆盖（钳到 [30s, 300s]）。
  * 见下方 taskGapMs 里的说明 —— 真人做一个任务就是几十秒起步。
@@ -361,16 +386,25 @@ function encodeOuter(opts: { cmd: number; inner: Uint8Array; device: DeviceProfi
 }
 
 /** 从外层响应解出内层（兼容带/不带尾字节两种排布）。 */
-function unwrapResponse(outer: Uint8Array): Uint8Array {
+async function unwrapResponse(outer: Uint8Array): Promise<Uint8Array> {
   let at = -1;
   for (let i = 60; i + 1 < outer.length; i++) {
     if (outer[i] === 0x1f && outer[i + 1] === 0x8b) { at = i; break; }
   }
   if (at < 0) throw new Error('响应里没有 gzip 体');
   const rest = outer.subarray(at);
+  // 打点：gunzipSync 走的是同步宿主 RPC，一旦宿主那边不返回，JS 侧没有任何
+  // 超时手段 —— 所以进出各留一条，卡住时能一眼看出是解压还是别处。
+  log('debug', `unwrap: ${outer.length}B 中 gzip 头在 ${at}，待解 ${rest.length}B`);
   for (const tail of [0, 1]) {
     if (rest.length <= 18 + tail) continue;
-    try { return gunzipMember(rest.subarray(0, rest.length - tail)); } catch { /* 换下一种 */ }
+    try {
+      const out = await step('gunzip 解包', Promise.resolve().then(() => gunzipMember(rest.subarray(0, rest.length - tail))));
+      log('debug', `unwrap: 解出 ${out.length}B（tail=${tail}）`);
+      return out;
+    } catch (e) {
+      log('debug', `unwrap: tail=${tail} 失败 ${errText(e).slice(0, 60)}`);
+    }
   }
   throw new Error('响应 gzip 解包失败');
 }
@@ -380,14 +414,22 @@ function unwrapResponse(outer: Uint8Array): Uint8Array {
 // ======================================================================
 
 const binaryHttp: HttpClient = async (url, req) => {
+  // 打点：jacc 是二进制 POST，出错时不抛而是静默挂住最要命 —— 进来先记一条，
+  // 卡住时「日志最后一条」就能直接指到是哪一发。
+  const cmd = (req.headers as any)?.jcegodid ?? '?';
+  const t0 = Date.now();
+  log('debug', `jacc cmd=${cmd} → 发出（${req.body?.byteLength ?? 0}B）`);
   try {
-    const res = await fetch(url, { method: req.method, headers: req.headers, body: req.body });
+    const res = await step(`jacc cmd=${cmd} 请求`, fetch(url, { method: req.method, headers: req.headers, body: req.body }));
+    const body = new Uint8Array(await step(`jacc cmd=${cmd} 读体`, res.arrayBuffer()));
+    log('debug', `jacc cmd=${cmd} ← ${res.status} ${body.byteLength}B ${Date.now() - t0}ms`);
     return {
       status: res.status,
       headers: Object.fromEntries(res.headers) as Record<string, string>,
-      body: new Uint8Array(await res.arrayBuffer()),
+      body,
     };
   } catch (e) {
+    log('debug', `jacc cmd=${cmd} ✗ ${errText(e).slice(0, 80)} ${Date.now() - t0}ms`);
     return { status: 0, error: errText(e) };
   }
 };
@@ -547,7 +589,7 @@ async function getCode(cfg: YspConfig): Promise<{ ok: boolean; message: string }
     writeStr(out, 5, '');
     writeStr(out, 6, '86');
   });
-  const inner = unwrapResponse(outer);
+  const inner = await unwrapResponse(outer);
   const msg = readStrByTag(inner, 1) ?? '';
   const ok = /^ok$/i.test(msg.trim());
   return { ok, message: ok ? '验证码已发送' : `发码失败：${serverMessage(inner) || msg}` };
@@ -606,7 +648,7 @@ async function newLogin(cfg: YspConfig, code: string): Promise<{ ok: boolean; me
 
   const outer = encodeOuter({ cmd: CMD.NewLogin, inner: rebuilt, device: dev });
   const resp = await postOuter(cfg, CMD.NewLogin, outer, requestUuid, requestId);
-  const inn = unwrapResponse(resp);
+  const inn = await unwrapResponse(resp);
 
   // token 提取（映射经 2026-11-07 逐字节比对验证）：
   //   第1枚 43 位 = access_token；第2枚 = refresh_token；第3枚 = vusession/jce_token
@@ -662,7 +704,7 @@ async function whoamiJce(cfg: YspConfig, t: Tokens): Promise<{ ok: boolean; mess
   )?.[0] ?? newRequestUuid();
   const outer = encodeOuter({ cmd: CMD.AccountUserInfo, inner, device: cfg.device });
   const res = await postOuter(cfg, CMD.AccountUserInfo, outer, uuidInSkel, 60);
-  const body = unwrapResponse(res);
+  const body = await unwrapResponse(res);
   const ret = readIntByTag(body, 2);
   const nick = /手机用户[\d*]+/.exec(new TextDecoder('utf-8').decode(body))?.[0];
   if (ret == null || ret === 0) return { ok: true, message: '会话有效', nickname: nick };
@@ -693,12 +735,17 @@ async function completeTask(cfg: YspConfig, t: Tokens, taskId: number): Promise<
   const at = latin.lastIndexOf('\x1d\x00\x00\x04\x00');
   if (at >= 0) inner[at + 5] = taskId;
   const outer = encodeOuter({ cmd: CMD.TaskComplete, inner, device: cfg.device });
+  log('debug', `completeTask(${taskId}) → postOuter`);
   const res = await postOuter(cfg, CMD.TaskComplete, outer, newRequestUuid(), 65);
-  const body = unwrapResponse(res);
+  log('debug', `completeTask(${taskId}) ← postOuter ${res.length}B`);
+  const body = await unwrapResponse(res);
+  log('debug', `completeTask(${taskId}) unwrap → ${body.length}B`);
   const txt = new TextDecoder('utf-8').decode(body);
-  if (/success/i.test(txt)) return { ok: true, message: 'success' };
-  if (/has been complete/i.test(txt)) return { ok: true, message: '已完成（此前结算）' };
-  if (isSessionExpired(txt)) return { ok: false, message: SESSION_HINT };
+  log('debug', `completeTask(${taskId}) decode → ${JSON.stringify(txt.slice(0, 24))}`);
+  if (/success/i.test(txt)) { log('debug', `completeTask(${taskId}) 判定 success`); return { ok: true, message: 'success' }; }
+  if (/has been complete/i.test(txt)) { log('debug', `completeTask(${taskId}) 判定 already`); return { ok: true, message: '已完成（此前结算）' }; }
+  if (isSessionExpired(txt)) { log('debug', `completeTask(${taskId}) 判定 会话失效`); return { ok: false, message: SESSION_HINT }; }
+  log('debug', `completeTask(${taskId}) 判定 其他`);
   return { ok: false, message: txt.replace(/[^\x20-\x7e\u4e00-\u9fa5]/g, '').slice(0, 40) };
 }
 
@@ -714,7 +761,7 @@ async function likeAction(cfg: YspConfig, t: Tokens): Promise<{ ok: boolean; mes
   ]);
   const outer = encodeOuter({ cmd: CMD.LikeAction, inner, device: cfg.device });
   const res = await postOuter(cfg, CMD.LikeAction, outer, newRequestUuid(), 66);
-  const body = unwrapResponse(res);
+  const body = await unwrapResponse(res);
   const txt = new TextDecoder('utf-8').decode(body);
   if (txt.includes('点赞成功')) return { ok: true, message: '点赞成功' };
   const ret = readIntByTag(body, 2);
@@ -742,13 +789,19 @@ type H5Http = (url: string, init: { method: string; headers: Record<string, stri
 
 /** 文本 HTTP：三个引擎都是 fetch（面板 0.3.0 起 QuickJS 也有）。 */
 const h5Http: H5Http = async (url, init) => {
+  // 打点：只留 path（query 里有 token，不能进日志）。卡住时最后一条就是位置。
+  const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+  const t0 = Date.now();
+  log('debug', `h5 ${init.method} ${path} → 发出`);
   try {
-    const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body });
-    const t = await res.text();
+    const res = await step(`h5 ${path} 请求`, fetch(url, { method: init.method, headers: init.headers, body: init.body }));
+    const t = await step(`h5 ${path} 读体`, res.text());
     let json: any = null;
     try { json = JSON.parse(t); } catch { json = null; }
+    log('debug', `h5 ${init.method} ${path} ← ${res.status} ${t.length}B ${Date.now() - t0}ms`);
     return { status: res.status, json, text: t };
   } catch (e) {
+    log('debug', `h5 ${init.method} ${path} ✗ ${errText(e).slice(0, 80)} ${Date.now() - t0}ms`);
     return { status: 0, json: null, text: String(errText(e)) };
   }
 };
@@ -827,7 +880,7 @@ type DuibaSignResult = {
 async function duFetch(url: string, init: { method: string; headers: Record<string, string>; body?: string }) {
   let res: any;
   try {
-    res = await fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any });
+    res = await step(`duiba ${init.method}`, fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any }));
   } catch (e) {
     const msg = errText(e);
     // 面板 0.3.x 之前的 fetch 只认 redirect:'follow'。这不是插件写错，是宿主能力缺口。
@@ -836,7 +889,7 @@ async function duFetch(url: string, init: { method: string; headers: Record<stri
     }
     throw e;
   }
-  const text = await res.text();
+  const text = await step(`duiba ${init.method} 读体`, res.text());
   let setCookies: string[] = [];
   const anyHeaders = res.headers as any;
   if (typeof anyHeaders.getSetCookie === 'function') {
@@ -1248,6 +1301,7 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
   }
 
   // ③ 逐个发
+  push(`→ 开始发 ${queue.length} 个包`);
   const done = new Map<number, number>();   // 任务 id → 本次已成功次数
   const full = new Set<number>();           // 任务 id → 已满，后续跳过
   for (let i = 0; i < queue.length; i++) {
@@ -1279,6 +1333,7 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
   }
 
   // ④ 兑吧签到（真签到；任务表里的「每日签到」只写计数、不给分，两套账）
+  push('→ 兑吧签到');
   let signin = '';
   try {
     const sg = await duibaSign(t);
@@ -1294,7 +1349,10 @@ async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => 
 
   // ⑤ 领取
   await wait(400);
+  push('→ 查待领取积分');
   const c = await collectPoints(t);
+  push(`→ 待领取结果：${c.message}`);
+  push('→ 查当前总积分');
   const points = await pointTotal(t);
   push(`领取：${c.message}`);
 
@@ -1472,7 +1530,7 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
     lines: r.lines,
     points: r.points,
   }));
-}, { budget_ms: 600000 });
+}, { budget_ms: 300000 });
 
 register_route(WEB_API + '/signin', 'POST', async () => {
   const t = needTokens();
@@ -1539,6 +1597,6 @@ register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
   log(r.failed ? 'warn' : 'info', summary);
-}, { summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分', budget_ms: 600000 });
+}, { budget_ms: 240_000, summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分' });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；引擎 ' + (IS_NODE ? 'node' : 'quickjs') + '）');
