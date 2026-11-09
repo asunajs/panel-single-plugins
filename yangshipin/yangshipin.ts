@@ -1653,7 +1653,13 @@ worker_hint('exclusive');
 // 新登录的账号要等下一次插件重载才会有自己的槽位（登录成功的提示里会写清楚）。
 const __yspSlots = Math.max(1, readState().accounts.length);
 for (let __slot = 0; __slot < __yspSlots; __slot++) {
-  register_cron(`每日任务 ${__slot + 1}`, '0 5,17 * * * ~1h', async () => {
+  // **错峰**：同一时刻触发会并发（run_one 交出 Promise 就返回，不等跑完），
+  // 多个账号在同一出口 IP 上同时高频请求最容易被风控。每账号错开 20 分钟，
+  // 一个账号一轮最多约 4 分钟，留足余量不重叠。
+  const __slotMinute = (__slot * 20) % 60;
+  const __slotHourShift = Math.floor((__slot * 20) / 60);   // 超过 60 分钟就顺延小时
+  const __hours = __slotHourShift === 0 ? '5,17' : '6,18';
+  register_cron(`每日任务 ${__slot + 1}`, `${__slotMinute} ${__hours} * * * ~6m`, async () => {
   const __idx = __slot;
   start(`央视频每日任务（账号 ${__idx + 1}）`);
   const st = readState();
