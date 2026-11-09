@@ -18,7 +18,8 @@ START_LINE=$(grep -n "\[start\] \[yangshipin\]" "$LOG" | tail -1 | cut -d: -f1)
 [ -z "$START_LINE" ] && exit 0
 
 # 结束的三种写法：预算/手动停止、正常跑完的汇总行、执行失败
-END_LINE=$(grep -nE "任务 .每日任务. 已停止|每日任务：[0-9]+ 新完成|任务 .每日任务. 执行失败" "$LOG" \
+# 四种收尾形态：停止 / 正常汇总 / 执行失败 / 兜底检查（今天已完成）
+END_LINE=$(grep -nE "任务 .每日任务. 已停止|每日任务：[0-9]+ 新完成|任务 .每日任务. 执行失败|兜底检查：" "$LOG" \
            | tail -1 | cut -d: -f1)
 if [ -n "$END_LINE" ] && [ "$END_LINE" -gt "$START_LINE" ]; then exit 0; fi
 
