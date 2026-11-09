@@ -1124,20 +1124,58 @@ function fsMod(): typeof import('node:fs') {
   return fs;
 }
 
-function readState(): { tokens?: Tokens; phone?: string; loggedAt?: string } {
-  try { return JSON.parse(fsMod().readFileSync('data/state.json', 'utf-8')) || {}; } catch { return {}; }
+/** 一个账号：一组凭证 + 它自己的手机号/登录时间/显示名。 */
+type Account = { tokens: Tokens; phone: string; loggedAt: string; label?: string };
+
+/** 状态文件：**多账号**。顺序即账号下标，cron 与 UI 都按下标寻址。 */
+type YspState = { accounts: Account[] };
+
+function readState(): YspState {
+  try {
+    const raw: any = JSON.parse(fsMod().readFileSync('data/state.json', 'utf-8')) || {};
+    if (Array.isArray(raw.accounts)) return { accounts: raw.accounts };
+    // 老格式只有一组凭证（{tokens, phone, loggedAt}）：读的时候就地升级，
+    // 下次写入自然落成新结构。删掉这个分支会让老用户的登录态丢掉。
+    if (raw.tokens?.jce_token) {
+      return { accounts: [{ tokens: raw.tokens, phone: raw.phone ?? '', loggedAt: raw.loggedAt ?? '' }] };
+    }
+    return { accounts: [] };
+  } catch {
+    return { accounts: [] };
+  }
 }
 
-function writeState(s: any): void {
+function writeState(s: YspState): void {
   const fs = fsMod();
   try { fs.mkdirSync('data', { recursive: true }); } catch { /* QuickJS 可能已存在 */ }
   fs.writeFileSync('data/state.json', JSON.stringify(s, null, 2));
 }
 
-function needTokens(): Tokens {
-  const t = readState().tokens;
-  if (!t?.jce_token) throw new Error('还没有登录态。先运行「发验证码」→ 填 code → 运行「登录」。');
-  return t;
+/** 按 vuserid 找下标；没有返回 -1。用于「同号重登」时原位更新而不是追加。 */
+function indexOfAccount(s: YspState, vuserid: string | number | undefined): number {
+  if (vuserid === undefined || vuserid === null) return -1;
+  const v = String(vuserid);
+  return s.accounts.findIndex((a) => String(a.tokens?.vuserid ?? '') === v);
+}
+
+/** 登录成功后写入：同号原位替换，新号追加。**绝不覆盖别的账号。** */
+function upsertAccount(acc: Account): number {
+  const s = readState();
+  const at = indexOfAccount(s, acc.tokens?.vuserid);
+  if (at >= 0) s.accounts[at] = { ...s.accounts[at], ...acc };
+  else s.accounts.push(acc);
+  writeState(s);
+  return at >= 0 ? at : s.accounts.length - 1;
+}
+
+/** 取第 i 个账号的凭证。下标越界/未登录都明确报错，不静默落到 0 号。 */
+function needTokens(index = 0): Tokens {
+  const s = readState();
+  const a = s.accounts[index];
+  if (!a?.tokens?.jce_token) {
+    throw new Error(`账号 ${index + 1} 还没有登录态（当前共 ${s.accounts.length} 个账号）。先「发验证码」→ 填 code →「登录」。`);
+  }
+  return a.tokens;
 }
 
 // ======================================================================
@@ -1162,8 +1200,8 @@ async function hLogin(): Promise<void> {
   if (!/^\d{4,8}$/.test(code)) throw new Error('验证码应为 4–8 位数字');
   const r = await newLogin(cfg, code);
   if (!r.ok || !r.tokens) throw new Error(r.message);
-  writeState({ tokens: r.tokens, phone: cfg.phone, loggedAt: new Date().toISOString() });
-  success(`登录成功：vuserid=${r.tokens.vuserid}（token 已写入 data/state.json）`);
+  const at = upsertAccount({ tokens: r.tokens, phone: cfg.phone, loggedAt: new Date().toISOString() });
+  success(`登录成功：vuserid=${r.tokens.vuserid}（已存为第 ${at + 1} 个账号，共 ${readState().accounts.length} 个）`);
 }
 
 /** 登录态验活（App 侧 24802，需 Node/Bun 引擎）。 */
@@ -1270,10 +1308,10 @@ function buildQueue(plan: PlanItem[]): QueueItem[] {
  *      保证单次执行稳稳落在面板 10 分钟 budget 内（超了是 SIGKILL）。
  *   4. **一次调用只处理一个账号**：多账号要各注册一条 cron，别在这里循环。
  */
-async function doTasksCore(opts: { likeFirst?: boolean; onLine?: (s: string) => void } = {}): Promise<DoTasksResult> {
+async function doTasksCore(opts: { index?: number; likeFirst?: boolean; onLine?: (s: string) => void } = {}): Promise<DoTasksResult> {
   const deadline = Date.now() + TASK_BUDGET_MS;
   const cfg = resolveConfig();
-  const t = needTokens();
+  const t = needTokens(opts.index ?? 0);
   const lines: string[] = [];
   const push = (s: string) => { lines.push(s); opts.onLine?.(s); };
 
@@ -1454,48 +1492,50 @@ function parseBody(req: any): any {
   try { return JSON.parse(req.body); } catch { throw new Error('请求体不是 JSON'); }
 }
 
-/** UI 状态：登录态 + 积分，页面首屏一次拿全。 */
+/** 从请求里取账号下标：body.index 优先，其次 query 的 i / index，缺省 0。 */
+function reqIndex(req: any): number {
+  let raw: any;
+  try { raw = parseBody(req)?.index; } catch { raw = undefined; }
+  if (raw === undefined || raw === null) raw = req?.query?.i ?? req?.query?.index;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+/** UI 状态：**全部账号**的登录态（积分由 /status 并发补）。 */
 function uiStatus() {
   const st = readState();
-  const t = st.tokens;
-  const engine = IS_NODE ? 'node' : 'quickjs';
-  if (!t?.jce_token) return { ok: true, engine, accounts: [] };
   return {
     ok: true,
-    engine,
-    accounts: [{
-      vuid: t.vuserid,
-      phone: st.phone,
-      nickname: t.nickname,
-      loggedAt: st.loggedAt,
-      // 积分靠 H5 现查：失败就是 null，不影响账号卡片显示
-      points: null,
-    }],
+    engine: IS_NODE ? 'node' : 'quickjs',
+    accounts: st.accounts.map((a, i) => ({
+      index: i,
+      vuid: a.tokens?.vuserid,
+      phone: a.phone,
+      nickname: a.tokens?.nickname,
+      label: a.label,
+      loggedAt: a.loggedAt,
+      points: null as number | null,
+    })),
   };
 }
 
-register_route(WEB_API + '/status', 'GET', () => {
+register_route(WEB_API + '/status', 'GET', async () => {
   const base = uiStatus();
-  const t = readState().tokens;
-  if (!t?.jce_token) return routeJson(200, base);
-  // 补一次积分（quickjs 也跑同一条 H5 路径）。
-  //
-  // 这一次顺带当**会话探针**用：积分查得到 ⇒ token 还有效；查不到就标注
-  // `sessionOk=false`，让卡片显示「可能已失效」。以前失败只吞掉积分，
-  // 卡片照样绿点「已登录」，与实际状态（auth fail）不符，会误导。
-  return pointTotal(t)
-    .then((p) => {
-      if (base.accounts[0]) {
-        base.accounts[0].points = p;
-        base.accounts[0].sessionOk = p !== null;
-      }
-      return routeJson(200, base);
-    })
-    .catch(() => {
-      if (base.accounts[0]) base.accounts[0].sessionOk = false;
-      return routeJson(200, base);
-    });
+  // 每个账号各打一次 point_total：既补积分，也当会话探针（查不到 → 可能已失效）。
+  // 并发发，账号多的时候不会把首屏拖成 N 倍。
+  await Promise.all(base.accounts.map(async (acc: any) => {
+    if (!acc.vuid) { acc.sessionOk = false; return; }
+    try {
+      const p = await pointTotal(needTokens(acc.index));
+      acc.points = p;
+      acc.sessionOk = p !== null;
+    } catch {
+      acc.sessionOk = false;
+    }
+  }));
+  return routeJson(200, base);
 });
+
 
 register_route(WEB_API + '/login/send', 'POST', (req: any) => {
   const body = parseBody(req);
@@ -1516,19 +1556,29 @@ register_route(WEB_API + '/login/verify', 'POST', (req: any) => {
   const cfg: YspConfig = { phone, device: (config() as any)?.device ?? DEFAULT_DEVICE };
   return newLogin(cfg, code).then((r) => {
     if (!r.ok || !r.tokens) return routeJson(400, { ok: false, message: r.message });
-    writeState({ tokens: r.tokens, phone, loggedAt: new Date().toISOString() });
-    return routeJson(200, { ok: true, message: r.message, vuid: r.tokens.vuserid });
+    // ⚠ 多账号：同号重登原位更新，新号追加。这里以前是 writeState({tokens...})
+    // 整体覆盖 —— 第二个号一登，第一个号的凭证就没了。
+    const at = upsertAccount({ tokens: r.tokens, phone, loggedAt: new Date().toISOString() });
+    return routeJson(200, { ok: true, message: r.message, vuid: r.tokens.vuserid, index: at });
   });
 });
 
-register_route(WEB_API + '/logout', 'POST', () => {
+register_route(WEB_API + '/logout', 'POST', (req: any) => {
+  const body = parseBody(req);
   const st = readState();
-  writeState({ ...st, tokens: undefined });
-  return routeJson(200, { ok: true, message: '已退出' });
+  // 带 index = 删那个账号；不带且只有一个号 = 删它（老 UI 的「退出」语义）
+  const i = body?.index === undefined ? (st.accounts.length === 1 ? 0 : -1) : Number(body.index);
+  if (i < 0 || i >= st.accounts.length) {
+    return routeJson(400, { ok: false, message: `账号下标 ${i} 越界（共 ${st.accounts.length} 个）` });
+  }
+  const gone = st.accounts[i];
+  st.accounts.splice(i, 1);
+  writeState(st);
+  return routeJson(200, { ok: true, message: `已删除账号 ${gone?.phone ?? i + 1}，还剩 ${st.accounts.length} 个` });
 });
 
-register_route(WEB_API + '/tasks', 'GET', () => {
-  const t = needTokens();
+register_route(WEB_API + '/tasks', 'GET', (req: any) => {
+  const t = needTokens(reqIndex(req));
   return pointTotal(t).then(async (total) => {
     const r = await listTasks(t);
     if (!r.ok) return routeJson(400, { ok: false, message: r.message });
@@ -1541,7 +1591,7 @@ register_route(WEB_API + '/tasks', 'GET', () => {
 
 register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
   const body = parseBody(req);
-  return doTasksCore({ likeFirst: !!body?.likeFirst }).then((r) => routeJson(200, {
+  return doTasksCore({ index: reqIndex(req), likeFirst: !!body?.likeFirst }).then((r) => routeJson(200, {
     ok: true,
     message: `任务结算 ${r.ok} 新完成 / ${r.skip} 已结算` + (r.failed ? ` / ${r.failed} 失败` : '')
       + `；当前积分 ${r.points ?? '?'}`,
@@ -1550,8 +1600,8 @@ register_route(WEB_API + '/do-tasks', 'POST', (req: any) => {
   }));
 }, { budget_ms: 300000 });
 
-register_route(WEB_API + '/signin', 'POST', async () => {
-  const t = needTokens();
+register_route(WEB_API + '/signin', 'POST', async (req: any) => {
+  const t = needTokens(reqIndex(req));
   const r = await duibaSign(t);
   const progress = r.consecutiveCount !== null
     ? `连续 ${r.consecutiveCount} 天` + (r.targetCount !== null ? `，周期还差 ${Math.max(0, r.targetCount + 1 - r.consecutiveCount)} 天` : '')
@@ -1563,8 +1613,8 @@ register_route(WEB_API + '/signin', 'POST', async () => {
   });
 }, { budget_ms: 60000 });
 
-register_route(WEB_API + '/cookies', 'GET', () => {
-  const t = needTokens();
+register_route(WEB_API + '/cookies', 'GET', (req: any) => {
+  const t = needTokens(reqIndex(req));
   const exp = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
   const pairs: Array<[string, string]> = [
     ['guid', t.guid], ['openid', t.openid], ['vuserid', t.vuserid],
@@ -1598,14 +1648,20 @@ register_nav({ label: '央视频', icon: '📺' });
 // 声明独占线程，免得同线程的其它插件被我们一起拖住（host-api §1.2.5 要求）。
 worker_hint('exclusive');
 
-register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
-  start('央视频每日任务');
+// **一个账号一个 cron 槽位**：`register_cron` 是加载期静态声明（面板侧不可运行时删除），
+// 所以按「加载那一刻有几个账号」注册几个；空槽立即返回，不占预算。
+// 新登录的账号要等下一次插件重载才会有自己的槽位（登录成功的提示里会写清楚）。
+const __yspSlots = Math.max(1, readState().accounts.length);
+for (let __slot = 0; __slot < __yspSlots; __slot++) {
+  register_cron(`每日任务 ${__slot + 1}`, '0 5,17 * * * ~1h', async () => {
+  const __idx = __slot;
+  start(`央视频每日任务（账号 ${__idx + 1}）`);
   const st = readState();
-  if (!st.tokens?.jce_token) {
-    log('warn', '没有登录态，跳过本次 —— 到插件页「添加账号」登录一次即可');
+  if (!st.accounts[__idx]?.tokens?.jce_token) {
+    log('warn', `账号 ${__idx + 1} 未登录或已删除，跳过本次`);
     return;
   }
-  const r = await doTasksCore({ onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
+  const r = await doTasksCore({ index: __idx, onLine: (s) => log(s.startsWith('✗') ? 'warn' : 'info', '  ' + s) });
   // 兜底空跑（今天早上已经做满）：一句话说完，不占日志版面
   if (r.planned === 0) {
     log('info', `兜底检查：今天已完成，未发送任务请求；当前积分 ${r.points ?? '?'}`);
@@ -1615,6 +1671,7 @@ register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
   log(r.failed ? 'warn' : 'info', summary);
-}, { budget_ms: 360_000, summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分' });
+  }, { budget_ms: 360_000, summary: `账号 ${__slot + 1}：每天 5/17 点做任务并领取` });
+}
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；引擎 ' + (IS_NODE ? 'node' : 'quickjs') + '）');

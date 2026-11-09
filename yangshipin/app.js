@@ -156,7 +156,7 @@ function renderAccounts() {
     tasks.type = 'button';
     tasks.textContent = '任务';
     tasks.addEventListener('click', () => withBusy(tasks, async () => {
-      const data = await call('/tasks');
+      const data = await call('/tasks?i=' + index);
       showLines(data.lines);
       setState('success', '已连接');
       await loadAccounts(true);
@@ -169,7 +169,7 @@ function renderAccounts() {
     run.textContent = '做任务';
     run.addEventListener('click', () => withBusy(run, async () => {
       show('正在结算今天的任务（后台执行，关掉这个页面不会中断）。\n观看类同一任务两次之间隔 35–50 秒（任务要求看 30 秒），\n点赞/分享/签到之间只隔几秒，整轮约 5 分钟。\n\n结果会写进面板日志；想在这里看就稍后回来刷新。');
-      const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true } });
+      const data = await call('/do-tasks', { method: 'POST', body: { likeFirst: true, index } });
       showLines((data.lines || []).concat([data.message || '']));
       setState('success', '已完成');
       await loadAccounts(true);
@@ -182,7 +182,7 @@ function renderAccounts() {
     signin.textContent = '签到';
     signin.addEventListener('click', () => withBusy(signin, async () => {
       show('正在做兑吧签到（连续 7 天一个周期，1-6 天各 5 分，第 7 天 20 分）…');
-      const data = await call('/signin', { method: 'POST', body: {} });
+      const data = await call('/signin', { method: 'POST', body: { index } });
       setLines([data.message || '已签到']);
       setState('success', '已签到');
       await loadAccounts(true);
@@ -194,7 +194,7 @@ function renderAccounts() {
     cookies.type = 'button';
     cookies.textContent = 'cookie';
     cookies.addEventListener('click', () => withBusy(cookies, async () => {
-      const data = await call('/cookies');
+      const data = await call('/cookies?i=' + index);
       show(data.netscape);
     }));
     actions.appendChild(cookies);
@@ -203,7 +203,7 @@ function renderAccounts() {
     remove.className = 'btn btn-sm danger-text';
     remove.type = 'button';
     remove.textContent = '删除';
-    remove.addEventListener('click', () => removeAccount());
+    remove.addEventListener('click', () => removeAccount(index, acc));
     actions.appendChild(remove);
 
     li.appendChild(main);
@@ -229,10 +229,11 @@ async function loadAccounts(quiet) {
   }
 }
 
-async function removeAccount() {
-  if (!confirm('确定删除这个账号？本地保存的登录凭证会被清除。')) return;
+async function removeAccount(index, acc) {
+  const who = (acc && acc.phone) ? acc.phone : ('第 ' + (index + 1) + ' 个');
+  if (!confirm('确定删除账号 ' + who + '？本地保存的登录凭证会被清除。')) return;
   try {
-    await call('/logout', { method: 'POST' });
+    await call('/logout', { method: 'POST', body: { index } });
     show('已删除账号');
     await loadAccounts();
   } catch (e) {
