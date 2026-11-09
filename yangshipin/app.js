@@ -116,8 +116,11 @@ function renderAccounts() {
     title.appendChild(name);
 
     const badge = document.createElement('span');
-    badge.className = 'badge ' + (acc.expired ? 'failed' : 'success');
-    badge.textContent = acc.expired ? '会话过期' : '已登录';
+    // sessionOk 由插件那次积分探针给出：false = 查不到积分，token 多半已失效。
+    // 不能说死是「过期」（也可能是网络），所以用「可能已失效」并复用 failed 配色。
+    const stale = acc.expired || acc.sessionOk === false;
+    badge.className = 'badge ' + (stale ? 'failed' : 'success');
+    badge.textContent = acc.expired ? '会话过期' : (stale ? '可能已失效' : '已登录');
     title.appendChild(badge);
 
     main.appendChild(title);

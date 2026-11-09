@@ -61,6 +61,28 @@
 4. 发完领取积分。
 
 
+## 卡死取证看门狗（`tools/ysp-watchdog.sh`）
+
+`step()` 只是兜底，真要定位「为什么挂住」得看线程栈。插件自己卡住时没法自救，
+所以有一个**独立于面板**的看门狗：
+
+- 由 launchd 每 30 秒跑一次（`~/Library/LaunchAgents/com.asunajs.panel.watchdog.plist`）
+- 判据：最后一条 `[start] [yangshipin]` **晚于**最后一条结束标志
+  （`任务 已停止` / `每日任务：N 新完成` / `任务 执行失败`），
+  且 start 与最后一条插件日志都静默超过 **90 秒**
+- 命中就 `sample <面板 pid> 2`，栈落到
+  `~/Library/Application Support/plugin-panel/watchdog/stacks/`
+- 同一轮只抓一次（`.last-sampled` 记 start 行号）
+
+> 部署时踩过一次：起初只认「已停止」，而**正常跑完**写的是
+> `每日任务：11 新完成 / …`，于是空闲状态被误判成执行中，抓了一份空现场。
+> 现在三种结束形态都认。
+
+看现场：`cat watchdog/stacks/stall-*.txt`（先看最后 5 条插件日志与静默时长），
+再用 `.stack` 找 Rust 线程停在哪个系统调用。
+
+---
+
 ## 超时与预算（防「跑了 10 分钟什么也没干」）
 
 一轮任务由 7~15 个包组成，包间隔 3~50 秒，正常 **1~3 分钟**跑完。历史上出现过

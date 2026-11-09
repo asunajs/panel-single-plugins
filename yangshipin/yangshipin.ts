@@ -420,7 +420,9 @@ const binaryHttp: HttpClient = async (url, req) => {
   const t0 = Date.now();
   log('debug', `jacc cmd=${cmd} → 发出（${req.body?.byteLength ?? 0}B）`);
   try {
-    const res = await step(`jacc cmd=${cmd} 请求`, fetch(url, { method: req.method, headers: req.headers, body: req.body }));
+    const res = await step(`jacc cmd=${cmd} 请求`, fetch(url, {
+      method: req.method, headers: req.headers, body: req.body, timeout_ms: 20_000,
+    }));
     const body = new Uint8Array(await step(`jacc cmd=${cmd} 读体`, res.arrayBuffer()));
     log('debug', `jacc cmd=${cmd} ← ${res.status} ${body.byteLength}B ${Date.now() - t0}ms`);
     return {
@@ -794,7 +796,10 @@ const h5Http: H5Http = async (url, init) => {
   const t0 = Date.now();
   log('debug', `h5 ${init.method} ${path} → 发出`);
   try {
-    const res = await step(`h5 ${path} 请求`, fetch(url, { method: init.method, headers: init.headers, body: init.body }));
+    const res = await step(`h5 ${path} 请求`, fetch(url, {
+      method: init.method, headers: init.headers, body: init.body,
+      timeout_ms: 15_000,   // 显式声明：面板的 timeout_global 覆盖到 DNS，不依赖默认值
+    }));
     const t = await step(`h5 ${path} 读体`, res.text());
     let json: any = null;
     try { json = JSON.parse(t); } catch { json = null; }
@@ -880,7 +885,10 @@ type DuibaSignResult = {
 async function duFetch(url: string, init: { method: string; headers: Record<string, string>; body?: string }) {
   let res: any;
   try {
-    res = await step(`duiba ${init.method}`, fetch(url, { method: init.method, headers: init.headers, body: init.body, redirect: 'manual' as any }));
+    res = await step(`duiba ${init.method}`, fetch(url, {
+      method: init.method, headers: init.headers, body: init.body,
+      redirect: 'manual' as any, timeout_ms: 15_000,
+    }));
   } catch (e) {
     const msg = errText(e);
     // 面板 0.3.x 之前的 fetch 只认 redirect:'follow'。这不是插件写错，是宿主能力缺口。
@@ -1470,13 +1478,23 @@ register_route(WEB_API + '/status', 'GET', () => {
   const base = uiStatus();
   const t = readState().tokens;
   if (!t?.jce_token) return routeJson(200, base);
-  // 补一次积分（quickjs 也跑同一条 H5 路径）；失败不报错，卡片先显示「积分未读取」
+  // 补一次积分（quickjs 也跑同一条 H5 路径）。
+  //
+  // 这一次顺带当**会话探针**用：积分查得到 ⇒ token 还有效；查不到就标注
+  // `sessionOk=false`，让卡片显示「可能已失效」。以前失败只吞掉积分，
+  // 卡片照样绿点「已登录」，与实际状态（auth fail）不符，会误导。
   return pointTotal(t)
     .then((p) => {
-      if (p !== null && base.accounts[0]) base.accounts[0].points = p;
+      if (base.accounts[0]) {
+        base.accounts[0].points = p;
+        base.accounts[0].sessionOk = p !== null;
+      }
       return routeJson(200, base);
     })
-    .catch(() => routeJson(200, base));
+    .catch(() => {
+      if (base.accounts[0]) base.accounts[0].sessionOk = false;
+      return routeJson(200, base);
+    });
 });
 
 register_route(WEB_API + '/login/send', 'POST', (req: any) => {
@@ -1597,6 +1615,6 @@ register_cron('每日任务', '0 5,17 * * * ~1h', async () => {
     + `；${r.collect}；当前积分 ${r.points ?? '?'}`;
   if (r.failed && !r.ok && !r.skip) throw new Error(summary);
   log(r.failed ? 'warn' : 'info', summary);
-}, { budget_ms: 240_000, summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分' });
+}, { budget_ms: 360_000, summary: '每天早 5 点 / 晚 5 点（各 ±1 小时抖动），一次做完当天所有任务并领取积分' });
 
 log('info', 'yangshipin 插件已加载（面板 ' + (typeof panel !== 'undefined' ? panel.version() : '?') + '；引擎 ' + (IS_NODE ? 'node' : 'quickjs') + '）');
