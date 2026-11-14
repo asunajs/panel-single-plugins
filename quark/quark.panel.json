@@ -1,0 +1,27 @@
+{
+  "title": "夸克网盘",
+  "order": 30,
+  "description": "夸克网盘每日签到；每天 8 点自动跑，也可在任务列表手动运行",
+  "min_panel": "0.4.0",
+  "capabilities": ["http", "notify"],
+  "config": {
+    "fields": [
+      {
+        "name": "url",
+        "label": "签到链接",
+        "type": "password",
+        "required": true,
+        "placeholder": "https://drive-m.quark.cn/1/clouddrive/capacity/growth/info?...",
+        "help": "抓包得到的完整 info 链接，会自动从中取 kps / sign / vcode。链接含账号凭据，别外传"
+      },
+      {
+        "name": "kps",
+        "label": "kps（可选）",
+        "type": "text",
+        "help": "不想贴整条链接时，也可以分开填这三个值"
+      },
+      { "name": "sign", "label": "sign（可选）", "type": "password" },
+      { "name": "vcode", "label": "vcode（可选）", "type": "password" }
+    ]
+  }
+}
