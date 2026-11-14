@@ -63,7 +63,7 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
   "id": "quark", "name": "夸克网盘签到", "summary": "每日签到（单账号）",
   "tags": ["夸克", "签到"], "provides": ["quark"],
   "type": "file", "repo": "asunajs/panel-single-plugins",
-  "path": "quark/quark.js", "ref": "main"
+  "path": "quark/quark.ts", "ref": "main"
 }
 ```
 
@@ -73,11 +73,20 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
 
 改完这份 JSON 不用发面板版本，商店点「刷新目录」就重取（进程内缓存 15 分钟）。
 
-> ⚠ 现在目录里这条 `quark` 还是 `.ts`，而且源码用的是 **0.3 的 `host-api`**：
-> 面板能把它转译成 `.js`（实测 6868 B → 6211 B、类型残留 0），但加载期会报
-> `Error resolving module 'host-api'` —— OXC 只擦类型，不改 import 契约。
-> 所以这条目前**不能收进目录**（收了就是「装了不生效」）。要收，先把源码迁到
-> `panel:host`（0.4 契约），`panel plugin check` 验过，再把 `path` 指向 `.js`/`.ts`。
+### 目录里现在有哪三条（2026-11-14）
+
+| id | 形态 | 指向 | 面板 |
+|---|---|---|---|
+| `mcloud` | `release` | `asunajs/mcloud-plugin` 的 `mcloud-plugin-0.3.0-panel04.zip` | ≥ 0.4.0 |
+| `mgmusic` | `release` | `asunajs/mgmusic-plugin` 的 `mgmusic-plugin-0.4.0-panel04.zip` | ≥ 0.4.0 |
+| `quark` | `file` | 本仓 `quark/quark.ts`（带 sha256） | ≥ 0.4.0 |
+
+两条 release 都**锁死了 `asset` 名**：那两个仓里同时存在 0.3 形状（`js/` + `<name>/`）
+和 0.4 形状（平铺）的包，不锁就会装到 0.3 那个 —— 装进去面板一个都不扫。
+
+> `quark` 之前一直是 0.3 的 `host-api` 契约（面板能转译成 `.js`，但加载期报
+> `Error resolving module 'host-api'`），所以长期没敢收。v0.2.0 已整体迁到
+> `panel:host`，干净实例实测 `failed_plugins 0`、任务「签到」正常登记。
 
 ## 安装（0.4）
 
@@ -88,7 +97,8 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
 
 - 插件名 = 文件名（去掉 `.js`）；目录里的 `provides` 要和它对得上。
 - 不在仓库里放 token、cookie、抓包 URL 或 `config.json`。
-- 插件里只用 `host-api`，保证 QuickJS / Node / Bun 三个引擎行为一致。
+- 0.4 插件只 `import ... from 'panel:host'`。`host-api` 是 0.3 老面板的契约，
+  在 0.4 里加载期就会报 `Error resolving module 'host-api'`（转译不改 import 语义）。
 - 每个插件一个 README；发现配置项变化时同步更新 README。
 
 ## License
