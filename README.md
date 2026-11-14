@@ -75,14 +75,19 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
 
 ### 目录里现在有哪三条（2026-11-14）
 
-| id | 形态 | 指向 | 面板 |
-|---|---|---|---|
-| `mcloud` | `release` | `asunajs/mcloud-plugin` 的 `mcloud-plugin-0.3.0-panel04.zip` | ≥ 0.4.0 |
-| `mgmusic` | `release` | `asunajs/mgmusic-plugin` 的 `mgmusic-plugin-0.4.0-panel04.zip` | ≥ 0.4.0 |
-| `quark` | `file` | 本仓 `quark/quark.ts`（带 sha256） | ≥ 0.4.0 |
+| id | 形态 | 指向 | 面板 | sha256 |
+|---|---|---|---|---|
+| `mcloud` | `release` | `asunajs/mcloud-plugin` 的 `mcloud-plugin-0.4.0-panel04.zip` | ≥ 0.4.0 | `a07096e9…e8402` |
+| `mgmusic` | `release` | `asunajs/mgmusic-plugin` 的 `mgmusic-plugin-0.5.0-panel04.zip` | ≥ 0.4.0 | `353b6af1…50d92` |
+| `quark` | `file` | 本仓 `quark/quark.ts` | ≥ 0.4.0 | `8c3f24d1…acabcb6` |
 
 两条 release 都**锁死了 `asset` 名**：那两个仓里同时存在 0.3 形状（`js/` + `<name>/`）
 和 0.4 形状（平铺）的包，不锁就会装到 0.3 那个 —— 装进去面板一个都不扫。
+
+三条也都写了 `sha256`：面板安装前**先校验再落盘**，对不上一个字节都不写。所以
+两个 release 仓重发同名资产时必须**同时更新这一格**（`sha256sum` 那个文件就挂在
+release 里，可以直接对）。这两份 zip 都是从**干净 worktree + tag** 打的
+（`pack:panel04`，固定 DOS 时间戳），同输入同 sha256。
 
 > `quark` 之前一直是 0.3 的 `host-api` 契约（面板能转译成 `.js`，但加载期报
 > `Error resolving module 'host-api'`），所以长期没敢收。v0.2.0 已整体迁到
