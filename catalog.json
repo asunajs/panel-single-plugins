@@ -1,10 +1,47 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-14T00:00:00Z",
+  "updated_at": "2026-11-14T20:20:00Z",
   "plugins": [
     {
+      "id": "mcloud",
+      "name": "移动云盘",
+      "summary": "移动云盘签到 / 抽奖 / 兑换 / 直播任务（四个插件一个包）",
+      "tags": [
+        "网盘",
+        "签到",
+        "移动"
+      ],
+      "provides": [
+        "mcloud",
+        "mcloud-daily",
+        "mcloud-exchange",
+        "mcloud-live"
+      ],
+      "type": "release",
+      "repo": "asunajs/mcloud-plugin",
+      "asset": "mcloud-plugin-0.3.0-panel04.zip",
+      "min_panel": "0.4.0"
+    },
+    {
+      "id": "mgmusic",
+      "name": "咪咕音乐",
+      "summary": "咪咕音乐金币中心：签到、评论、听歌补报、领奖",
+      "tags": [
+        "音乐",
+        "签到",
+        "咪咕"
+      ],
+      "provides": [
+        "mgmusic"
+      ],
+      "type": "release",
+      "repo": "asunajs/mgmusic-plugin",
+      "asset": "mgmusic-plugin-0.4.0-panel04.zip",
+      "min_panel": "0.4.0"
+    },
+    {
       "id": "quark",
-      "name": "夸克网盘签到",
+      "name": "夸克网盘",
       "summary": "夸克网盘每日签到（单账号）",
       "tags": [
         "夸克",
@@ -17,7 +54,9 @@
       "type": "file",
       "repo": "asunajs/panel-single-plugins",
       "path": "quark/quark.ts",
-      "ref": "main"
+      "ref": "main",
+      "sha256": "8c3f24d149cd40b06dc45515d835140d0363d99e8e46a01ff88c6f349acabcb6",
+      "min_panel": "0.4.0"
     }
   ]
 }
