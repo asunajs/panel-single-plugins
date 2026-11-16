@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-14T15:55:00Z",
+  "updated_at": "2026-11-16T15:30:00Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -21,7 +21,8 @@
       "repo": "asunajs/mcloud-plugin",
       "asset": "mcloud-plugin-0.4.0-panel04.zip",
       "min_panel": "0.4.0",
-      "sha256": "a07096e9ce32a61ebc3c2c8539f187c1b2ac2d5e121faaa63448fadf4dfe8402"
+      "sha256": "a07096e9ce32a61ebc3c2c8539f187c1b2ac2d5e121faaa63448fadf4dfe8402",
+      "version": "0.4.0"
     },
     {
       "id": "mgmusic",
@@ -37,9 +38,10 @@
       ],
       "type": "release",
       "repo": "asunajs/mgmusic-plugin",
-      "asset": "mgmusic-plugin-0.5.0-panel04.zip",
+      "asset": "mgmusic-plugin-0.5.1-panel04.zip",
       "min_panel": "0.4.0",
-      "sha256": "353b6af1afbe83f3277018573217161a239afb4265ecd06f993cd581fb750d92"
+      "sha256": "3dbf2cb461af079b6f9cdc1bc984c41412aaa27836e37c813719ff74ae8fd92d",
+      "version": "0.5.1"
     },
     {
       "id": "quark",
@@ -58,7 +60,8 @@
       "path": "quark/quark.ts",
       "ref": "main",
       "sha256": "8c3f24d149cd40b06dc45515d835140d0363d99e8e46a01ff88c6f349acabcb6",
-      "min_panel": "0.4.0"
+      "min_panel": "0.4.0",
+      "version": "0.2.0"
     }
   ]
 }

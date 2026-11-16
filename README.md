@@ -61,6 +61,7 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
 ```json
 {
   "id": "quark", "name": "夸克网盘签到", "summary": "每日签到（单账号）",
+  "version": "0.2.0",
   "tags": ["夸克", "签到"], "provides": ["quark"],
   "type": "file", "repo": "asunajs/panel-single-plugins",
   "path": "quark/quark.ts", "ref": "main"
@@ -68,17 +69,18 @@ https://raw.githubusercontent.com/asunajs/panel-single-plugins/main/catalog.json
 ```
 
 三条硬规矩：`provides` 要写全（一个包可能带几个插件，商店靠它判断「已装」）；
-能给 `sha256` 就给（写了就必须对上，否则一个字节都不写）；`type: file` 认 `.js` / `.ts`
-（`.ts` 由面板内置 OXC 擦类型后落成 `.js`）。
+`version` 写这一条的**最新版**（商店拿它和插件清单 `<name>.panel.json` 的 `version` 比，
+大于就是可更新；不写则显示「版本未标注」）；能给 `sha256` 就给（写了就必须对上，否则一个
+字节都不写）；`type: file` 认 `.js` / `.ts`（`.ts` 由面板内置 OXC 擦类型后落成 `.js`）。
 
-改完这份 JSON 不用发面板版本，商店点「刷新目录」就重取（进程内缓存 15 分钟）。
+改完这份 JSON 不用发面板版本：商店页每次打开都会重取，面板打开钩子最多 5 分钟缓存一次。
 
 ### 目录里现在有哪三条（2026-11-14）
 
 | id | 形态 | 指向 | 面板 | sha256 |
 |---|---|---|---|---|
 | `mcloud` | `release` | `asunajs/mcloud-plugin` 的 `mcloud-plugin-0.4.0-panel04.zip` | ≥ 0.4.0 | `a07096e9…e8402` |
-| `mgmusic` | `release` | `asunajs/mgmusic-plugin` 的 `mgmusic-plugin-0.5.0-panel04.zip` | ≥ 0.4.0 | `353b6af1…50d92` |
+| `mgmusic` | `release` | `asunajs/mgmusic-plugin` 的 `mgmusic-plugin-0.5.1-panel04.zip` | ≥ 0.4.0 | `3dbf2cb4…fd92d` |
 | `quark` | `file` | 本仓 `quark/quark.ts` | ≥ 0.4.0 | `8c3f24d1…acabcb6` |
 
 两条 release 都**锁死了 `asset` 名**：那两个仓里同时存在 0.3 形状（`js/` + `<name>/`）
