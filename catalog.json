@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-16T15:30:00Z",
+  "updated_at": "2026-11-17T07:55:01Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -19,10 +19,10 @@
       ],
       "type": "release",
       "repo": "asunajs/mcloud-plugin",
-      "asset": "mcloud-plugin-0.4.0-panel04.zip",
+      "asset": "mcloud-plugin-0.4.3-panel04.zip",
       "min_panel": "0.4.0",
-      "sha256": "a07096e9ce32a61ebc3c2c8539f187c1b2ac2d5e121faaa63448fadf4dfe8402",
-      "version": "0.4.0"
+      "sha256": "12ee97f58f0012413b166c4b9a834968920f7fb9d4b53448374fe0f59a54257c",
+      "version": "0.4.3"
     },
     {
       "id": "mgmusic",
@@ -38,10 +38,10 @@
       ],
       "type": "release",
       "repo": "asunajs/mgmusic-plugin",
-      "asset": "mgmusic-plugin-0.5.1-panel04.zip",
+      "asset": "mgmusic-plugin-0.5.2-panel04.zip",
       "min_panel": "0.4.0",
-      "sha256": "3dbf2cb461af079b6f9cdc1bc984c41412aaa27836e37c813719ff74ae8fd92d",
-      "version": "0.5.1"
+      "sha256": "cdeb279bed3af90b45de3b9094c8801acef23a487dbfaee04cb8cf8aa462bbaa",
+      "version": "0.5.2"
     },
     {
       "id": "quark",
