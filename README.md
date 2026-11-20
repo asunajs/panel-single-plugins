@@ -13,7 +13,7 @@ quark/
 | 插件 | 文件 | 说明 |
 |---|---|---|
 | `quark` | [`quark/quark.ts`](quark/quark.ts) | 夸克网盘每日签到（单账号） |
-| `yangshipin` | [`yangshipin/yangshipin.ts`](yangshipin/yangshipin.ts) | 央视频短信登录 + 一键积分任务（引擎差异见其 README） |
+| `yangshipin` | [`yangshipin/yangshipin.ts`](yangshipin/yangshipin.ts) | ⚠ **已被取代**：央视频现在由 `asunajs/yangshipin` 的 Release 发布（目录里那条 `type: release`，单文件产物 `yangshipin.js` + 清单 + `.webui/`）。这个目录是 0.3 时代的快照，仅作历史参考，**别再装它** |
 
 ## 为什么单文件
 
