@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-20T02:09:30Z",
+  "updated_at": "2026-11-20T12:36:27Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -77,10 +77,10 @@
       ],
       "type": "release",
       "repo": "asunajs/panel-single-plugins",
-      "asset": "yangshipin-0.3.0-panel04.zip",
+      "asset": "yangshipin-0.3.1-panel04.zip",
       "min_panel": "0.7.0",
-      "sha256": "7cf4cbf8286a69d9b400ca547b19c3c3a11eb3c018008a943fb96d07f568bcca",
-      "version": "0.3.0"
+      "sha256": "30b7379b461441a6bdbfb86ecd9499cad369770ba774b10cc1af41040c302164",
+      "version": "0.3.1"
     }
   ]
 }
