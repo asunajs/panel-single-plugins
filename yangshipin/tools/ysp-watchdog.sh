@@ -6,7 +6,7 @@
 # 命中就 sample 面板进程线程栈，同一轮只抓一次。
 
 set -u
-P="/Users/catlair/Library/Application Support/plugin-panel"
+P="${HOME}/Library/Application Support/plugin-panel"
 LOG="$P/logs/stdout.log"
 OUT="$P/watchdog/stacks"
 MARK="$P/watchdog/.last-sampled"
