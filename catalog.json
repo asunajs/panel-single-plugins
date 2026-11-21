@@ -66,7 +66,7 @@
     {
       "id": "yangshipin",
       "name": "央视频",
-      "summary": "央视频：短信验证码登录、每日任务结算、积分领取、兑吧签到",
+      "summary": "央视频：短信验证码登录（含自动续期）、每日任务结算、积分领取、兑吧签到",
       "tags": [
         "央视频",
         "签到",
@@ -77,10 +77,10 @@
       ],
       "type": "release",
       "repo": "asunajs/panel-single-plugins",
-      "asset": "yangshipin-0.3.2-panel04.zip",
+      "asset": "yangshipin-0.4.2-panel04.zip",
       "min_panel": "0.7.0",
-      "sha256": "8ab891d13a40afb955f01d257ad7ce2b956e11f90bd889eab1d6fe18a943ee88",
-      "version": "0.3.2"
+      "sha256": "1a8698f0017c80cfc48a48e11ce86d8776c55dcdf676bd76c31cf58e0d8170bf",
+      "version": "0.4.2"
     }
   ]
 }
