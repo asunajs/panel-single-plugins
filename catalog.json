@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-21T15:33:50Z",
+  "updated_at": "2026-11-21T15:59:49Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -19,9 +19,9 @@
       ],
       "type": "release",
       "repo": "asunajs/mcloud-plugin",
-      "asset": "mcloud-plugin-0.7.0-panel07.zip",
-      "min_panel": "0.7.0",
-      "sha256": "3271e4fb77d0ad6c59164cf07d874f59f3f26b66583ef830a02cce4d3283af48",
+      "asset": "mcloud-plugin-0.7.0-panel08.zip",
+      "min_panel": "0.8.0",
+      "sha256": "bc40c7d884215f4c260983b82b8d74ceb15af51ec7c4757c9530e32e59fa1ffa",
       "version": "0.7.0"
     },
     {
@@ -38,9 +38,9 @@
       ],
       "type": "release",
       "repo": "asunajs/mgmusic-plugin",
-      "asset": "mgmusic-plugin-0.8.0-panel07.zip",
-      "min_panel": "0.7.0",
-      "sha256": "daadeb542c6ed01de32caf219f1aefce4642395804b978042a64cbb6c1c4f523",
+      "asset": "mgmusic-plugin-0.8.0-panel08.zip",
+      "min_panel": "0.8.0",
+      "sha256": "d6e6002bb18946a9128b023232dc79a48d76e44ef4ce71ed7c8323d1fb74ec33",
       "version": "0.8.0"
     },
     {
@@ -77,9 +77,9 @@
       ],
       "type": "release",
       "repo": "asunajs/panel-single-plugins",
-      "asset": "yangshipin-0.4.3-panel07.zip",
-      "min_panel": "0.7.0",
-      "sha256": "bda9fd1b64141a2895861db8b11d8963b47b792a1f81fd55eca92e0414bcf224",
+      "asset": "yangshipin-0.4.3-panel08.zip",
+      "min_panel": "0.8.0",
+      "sha256": "5357d2da42777132429a9e9eccb97ad380f97651aca86eadd5e2dbeb7b759154",
       "version": "0.4.3"
     }
   ]
