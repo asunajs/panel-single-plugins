@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-24T08:13:59Z",
+  "updated_at": "2026-11-24T08:31:12Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -75,12 +75,30 @@
       "provides": [
         "yangshipin"
       ],
-      "type": "release",
+      "type": "url",
       "repo": "asunajs/panel-single-plugins",
-      "asset": "yangshipin-0.4.4-panel08.zip",
       "min_panel": "0.8.3",
       "sha256": "770e133c9372506ef0a9a93e114348b2fcc7ef73777417a9565e1c0641de9818",
-      "version": "0.4.4"
+      "version": "0.4.4",
+      "url": "https://github.com/asunajs/panel-single-plugins/releases/download/yangshipin-0.4.4/yangshipin-0.4.4-panel08.zip"
+    },
+    {
+      "id": "shop",
+      "name": "插件商店",
+      "summary": "按一份目录清单装插件；商店自己也在清单里，可以自我更新",
+      "tags": [
+        "商店",
+        "工具"
+      ],
+      "provides": [
+        "shop"
+      ],
+      "type": "url",
+      "repo": "asunajs/panel-single-plugins",
+      "url": "https://github.com/asunajs/panel-single-plugins/releases/download/shop-0.3.3/shop-0.3.3-panel08.zip",
+      "min_panel": "0.8.3",
+      "sha256": "c8e61bf66539070b3d5f59930a71994dfcf394a423f15bac4586d4585ea5851e",
+      "version": "0.3.3"
     }
   ]
 }
