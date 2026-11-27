@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-25T02:05:00Z",
+  "updated_at": "2026-11-27T14:51:35Z",
   "plugins": [
     {
       "id": "mcloud",
@@ -19,10 +19,10 @@
       ],
       "type": "release",
       "repo": "asunajs/mcloud-plugin",
-      "asset": "mcloud-plugin-0.7.6-panel08.zip",
+      "asset": "mcloud-plugin-0.7.10-panel08.zip",
       "min_panel": "0.8.3",
-      "sha256": "b9c30d88b7276095680ab0ecb741a274d2e8b58278c790f895e405fcee45f3fb",
-      "version": "0.7.6"
+      "sha256": "3787c0606d138afdde6910765d3ef570f11922bd9f449d28faae688c5dbd017b",
+      "version": "0.7.10"
     },
     {
       "id": "mgmusic",

@@ -29,6 +29,17 @@ quark/
 > 已向面板提了 `type: dir` 多文件工程的反向需求
 > （见 [`panel-requests/PANEL-TODOS.md`](panel-requests/PANEL-TODOS.md) §6）；面板支持后本仓会收多文件插件。
 
+## 货架体检（改完插件必须跑）
+
+```bash
+node scripts/check-catalog.mjs        # 体检：版本 / 资产名 / sha256 跟各仓最新 release 对不对
+node scripts/check-catalog.mjs --fix  # 就地更新（版本、资产名、sha、updated_at）
+```
+
+为什么要有它：面板发版、插件发版、货架更新是**三条线**，前两条都不会自动带动第三条。
+于是很容易出现「插件出了 0.7.10，商店里还写着 0.7.8」—— 用户点更新装回来的还是旧的。
+这个脚本就是那条容易漏的检查；面板仓发版前的 `scripts/pre-release.sh` 也会跑它。
+
 ## panel-requests/ —— 给面板仓的反向需求
 
 宿主能力补齐清单与工作会话提示词放这里（[`panel-requests/`](panel-requests/)），
